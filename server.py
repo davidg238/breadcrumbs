@@ -173,6 +173,18 @@ a:hover { text-decoration: underline; }
 
 .messages { flex: 1; overflow-y: auto; padding: 16px; }
 .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: #484f58; font-size: 16px; }
+.summary-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.summary-table th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #30363d; color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.summary-table td { padding: 6px 12px; border-bottom: 1px solid #21262d; }
+.summary-table tr:hover { background: #161b22; }
+.summary-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.summary-table .cost { color: #3fb950; }
+.summary-table .project-name { color: #58a6ff; cursor: pointer; }
+.summary-table .project-name:hover { text-decoration: underline; }
+.summary-totals { margin-top: 16px; padding: 12px 16px; background: #161b22; border-radius: 8px; display: flex; gap: 24px; font-size: 13px; color: #8b949e; }
+.summary-totals .val { color: #e6edf3; font-weight: 600; }
+.summary-totals .cost { color: #3fb950; font-weight: 600; }
+.summary-wrap { padding: 20px; overflow-y: auto; height: 100%; }
 
 /* Message bubbles */
 .message { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; border-left: 3px solid transparent; }
@@ -329,7 +341,7 @@ function populateProjectFilter() {
   projects.sort();
   var sel = document.getElementById('projectFilter');
   var current = sel.value;
-  sel.innerHTML = '<option value="">All projects (' + sessions.length + ')</option>';
+  sel.innerHTML = '<option value="">All projects (' + projects.length + '/' + sessions.length + ' sessions)</option>';
   projects.forEach(function(p) {
     var count = sessions.filter(function(s) { return s.project === p; }).length;
     sel.innerHTML += '<option value="' + esc(p) + '"' + (p === current ? ' selected' : '') + '>' + esc(p) + ' (' + count + ')</option>';
@@ -338,7 +350,14 @@ function populateProjectFilter() {
 
 document.getElementById('projectFilter').addEventListener('change', function(e) {
   selectedProject = e.target.value;
+  currentSessionId = null;
   renderSidebar();
+  if (!selectedProject) {
+    renderProjectSummary();
+  } else {
+    document.getElementById('statusBar').style.display = 'none';
+    document.getElementById('messages').innerHTML = '<div class="empty-state">Select a session to view</div>';
+  }
 });
 
 function renderSidebar(filter) {
@@ -458,6 +477,64 @@ function toggleCollapse(el) {
   if (content && content.classList.contains('collapsible-content')) {
     content.style.display = el.classList.contains('open') ? 'block' : 'none';
   }
+}
+
+function renderProjectSummary() {
+  document.getElementById('statusBar').style.display = 'none';
+  var container = document.getElementById('messages');
+
+  // Aggregate by project
+  var projects = {};
+  sessions.forEach(function(s) {
+    var p = s.project || 'Other';
+    if (!projects[p]) projects[p] = { sessions: 0, first: null, last: null, toks_in: 0, toks_cached: 0, toks_out: 0, cost: 0 };
+    var pr = projects[p];
+    pr.sessions++;
+    if (s.started_at && (!pr.first || s.started_at < pr.first)) pr.first = s.started_at;
+    if (s.started_at && (!pr.last || s.started_at > pr.last)) pr.last = s.started_at;
+    pr.toks_in += s.total_input_tokens || 0;
+    pr.toks_cached += (s.total_cache_write_tokens || 0) + (s.total_cache_read_tokens || 0);
+    pr.toks_out += s.total_output_tokens || 0;
+    pr.cost += s.estimated_cost_usd || 0;
+  });
+
+  var sorted = Object.keys(projects).sort();
+  var totals = { sessions: 0, toks_in: 0, toks_cached: 0, toks_out: 0, cost: 0 };
+
+  var html = '<div class="summary-wrap">';
+  html += '<table class="summary-table">';
+  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th><th class="num">Cost</th></tr></thead>';
+  html += '<tbody>';
+  sorted.forEach(function(p) {
+    var pr = projects[p];
+    totals.sessions += pr.sessions;
+    totals.toks_in += pr.toks_in;
+    totals.toks_cached += pr.toks_cached;
+    totals.toks_out += pr.toks_out;
+    totals.cost += pr.cost;
+    html += '<tr>';
+    html += '<td class="project-name" onclick="document.getElementById(\'projectFilter\').value=\'' + esc(p) + '\';selectedProject=\'' + esc(p) + '\';renderSidebar();document.getElementById(\'statusBar\').style.display=\'none\';document.getElementById(\'messages\').innerHTML=\'<div class=\\\'empty-state\\\'>Select a session to view</div>\';">' + esc(p) + '</td>';
+    html += '<td class="num">' + pr.sessions + '</td>';
+    html += '<td>' + (pr.first ? pr.first.substring(0, 10) : '') + '</td>';
+    html += '<td>' + (pr.last ? pr.last.substring(0, 10) : '') + '</td>';
+    html += '<td class="num">' + fmtNum(pr.toks_in) + '</td>';
+    html += '<td class="num">' + fmtNum(pr.toks_cached) + '</td>';
+    html += '<td class="num">' + fmtNum(pr.toks_out) + '</td>';
+    html += '<td class="num cost">$' + pr.cost.toFixed(2) + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+
+  html += '<div class="summary-totals">';
+  html += '<span>Sessions: <span class="val">' + totals.sessions + '</span></span>';
+  html += '<span>Tokens In: <span class="val">' + fmtNum(totals.toks_in) + '</span></span>';
+  html += '<span>Cached: <span class="val">' + fmtNum(totals.toks_cached) + '</span></span>';
+  html += '<span>Tokens Out: <span class="val">' + fmtNum(totals.toks_out) + '</span></span>';
+  html += '<span>Total Cost: <span class="cost">$' + totals.cost.toFixed(2) + '</span></span>';
+  html += '</div>';
+  html += '</div>';
+
+  container.innerHTML = html;
 }
 
 function renderMessages(msgs) {
@@ -580,7 +657,7 @@ document.getElementById('search').addEventListener('input', function(e) {
 });
 
 // Boot
-fetchSessions();
+fetchSessions().then(function() { renderProjectSummary(); });
 </script>
 </body>
 </html>
