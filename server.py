@@ -439,7 +439,7 @@ function renderMessages(msgs) {
   var html = '';
 
   msgs.forEach(function(msg) {
-    if (msg.type === 'file-history-snapshot') return;
+    if (msg.type === 'file-history-snapshot' || msg.type === 'progress') return;
 
     if (msg.tool_name) {
       // Tool call
@@ -463,8 +463,8 @@ function renderMessages(msgs) {
       html += '</div>';
       html += '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div></div>';
       html += '</div>';
-    } else if (msg.role === 'user' && msg.tool_result) {
-      // Tool result — API sends these as user role
+    } else if (msg.type === 'tool_result' || (msg.role === 'user' && msg.tool_result)) {
+      // Tool result
       var trPreview = (msg.content_text || msg.tool_result || '').substring(0, 80).replace(/\\n/g, ' ');
       html += '<div class="message tool">';
       html += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
@@ -473,9 +473,17 @@ function renderMessages(msgs) {
       html += '<span class="tool-preview">' + esc(trPreview) + '</span>';
       html += '</div>';
       html += '<div class="collapsible-content">';
-      if (msg.tool_result) html += '<div class="tool-detail">' + esc(msg.tool_result) + '</div>';
-      if (msg.content_text && msg.content_text !== msg.tool_result) html += '<div class="tool-detail">' + esc(msg.content_text) + '</div>';
+      html += '<div class="tool-detail">' + esc(msg.content_text || msg.tool_result || '') + '</div>';
       html += '</div>';
+      html += '</div>';
+    } else if (msg.type === 'system_injection') {
+      // System-injected content (skill loads, system reminders, etc.)
+      html += '<div class="message system">';
+      html += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
+      html += '<span class="triangle">&#9654;</span>';
+      html += '<span class="message-label">System</span>';
+      html += '</div>';
+      html += '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div></div>';
       html += '</div>';
     } else if (msg.role === 'user') {
       html += '<div class="message user">';

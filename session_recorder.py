@@ -246,6 +246,12 @@ def handle_sync(hook_input):
 
     db = get_db()
     try:
+        # Remove crash-insurance prompt messages (NULL sequence) — sync replaces them
+        db.execute(
+            "DELETE FROM messages WHERE session_id = ? AND sequence IS NULL",
+            (session_id,)
+        )
+
         lines = tp.read_text().splitlines()
 
         sequence = 0
@@ -300,6 +306,15 @@ def handle_sync(hook_input):
             content_text = extract_text(content)
             tool_name, tool_input = extract_tool_use(content)
             tool_result = extract_tool_result(content)
+
+            # Classify user messages: real prompt vs tool result vs system injection
+            if entry_type == "user" and role == "user":
+                if isinstance(content, str):
+                    pass  # genuine user prompt, keep type="user"
+                elif tool_result is not None:
+                    entry_type = "tool_result"
+                else:
+                    entry_type = "system_injection"
 
             upsert_message(
                 db, uuid, session_id,
