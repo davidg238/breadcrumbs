@@ -45,6 +45,24 @@ Data is stored in `~/.claude/breadcrumbs.db` with three tables:
 | `messages` | Every message — prompts, responses, tool calls, results |
 | `message_images` | Screenshots and images extracted from messages |
 
+## Viewer
+
+Browse sessions in your browser:
+
+```bash
+python3 server.py                    # opens browser automatically
+python3 server.py --port 9000        # custom port
+python3 server.py --no-open          # don't auto-open browser
+```
+
+Features:
+- Session list grouped by project, with search and keyboard navigation
+- Conversation view with user/assistant messages, collapsible tool calls
+- Inline image display with expand/collapse toggle
+- Session cost tracking (input, output, cache tokens)
+- Editable session names (click the name in the status bar)
+- Keyboard: `/` to search, Up/Down to navigate sessions, Escape to blur
+
 ## Querying
 
 ```bash
@@ -81,6 +99,7 @@ FROM messages WHERE type = 'user' AND content_text LIKE '%search term%';
 
 ```
 session_recorder.py  — the recording script (copied to ~/.claude/hooks/ on install)
+server.py            — web viewer (run manually to browse sessions)
 install.py           — sets up hooks in Claude Code settings
 uninstall.py         — removes hooks, preserves database
 ```
