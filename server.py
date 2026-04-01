@@ -664,6 +664,283 @@ fetchSessions().then(function() { renderProjectSummary(); });
 """
 
 
+# --- MCP Protocol ---
+
+MCP_SERVER_INFO = {
+    "name": "breadcrumbs",
+    "version": "1.0.0",
+}
+
+MCP_TOOLS = [
+    {
+        "name": "list_projects",
+        "description": "List all projects with session counts, date ranges, and total cost",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "list_sessions",
+        "description": "List sessions, optionally filtered by project and date range",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Filter by project name"},
+                "since": {"type": "string", "description": "ISO date, sessions after this date"},
+                "until": {"type": "string", "description": "ISO date, sessions before this date"},
+                "limit": {"type": "integer", "description": "Max sessions to return (default 20)"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_session_messages",
+        "description": "Get all messages for a session. Returns user prompts and assistant responses by default.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Session ID"},
+                "types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Message types to include (default: ['user', 'assistant'])",
+                },
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "search_messages",
+        "description": "Full-text search across all session messages",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Text to search for"},
+                "project": {"type": "string", "description": "Filter by project name"},
+                "since": {"type": "string", "description": "ISO date, messages after this date"},
+                "limit": {"type": "integer", "description": "Max results (default 20)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_stats",
+        "description": "Aggregate statistics: sessions, tokens, cost, top tools used",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Filter by project name"},
+                "since": {"type": "string", "description": "ISO date"},
+                "until": {"type": "string", "description": "ISO date"},
+            },
+            "required": [],
+        },
+    },
+]
+
+
+def mcp_list_projects(args):
+    db = get_db()
+    try:
+        all_sessions = get_sessions(db)
+        projects = {}
+        for s in all_sessions:
+            p = s["project"] or "Other"
+            if p not in projects:
+                projects[p] = {"project": p, "cwd": s["cwd"], "session_count": 0,
+                               "first_session": None, "last_session": None, "total_cost_usd": 0}
+            pr = projects[p]
+            pr["session_count"] += 1
+            if s["started_at"] and (not pr["first_session"] or s["started_at"] < pr["first_session"]):
+                pr["first_session"] = s["started_at"]
+            if s["started_at"] and (not pr["last_session"] or s["started_at"] > pr["last_session"]):
+                pr["last_session"] = s["started_at"]
+            pr["total_cost_usd"] += s["estimated_cost_usd"] or 0
+        result = sorted(projects.values(), key=lambda x: x["project"])
+        for r in result:
+            r["total_cost_usd"] = round(r["total_cost_usd"], 4)
+        return json.dumps(result, indent=2)
+    finally:
+        db.close()
+
+
+def mcp_list_sessions(args):
+    db = get_db()
+    try:
+        all_sessions = get_sessions(db)
+        filtered = all_sessions
+        if args.get("project"):
+            filtered = [s for s in filtered if s["project"] == args["project"]]
+        if args.get("since"):
+            filtered = [s for s in filtered if s["started_at"] and s["started_at"] >= args["since"]]
+        if args.get("until"):
+            filtered = [s for s in filtered if s["started_at"] and s["started_at"] <= args["until"]]
+        limit = args.get("limit", 20)
+        filtered = filtered[:limit]
+        result = [{
+            "session_id": s["session_id"], "name": s["name"], "project": s["project"],
+            "model": s["model"], "started_at": s["started_at"],
+            "duration_seconds": s["duration_seconds"], "message_count": s["message_count"],
+            "estimated_cost_usd": s["estimated_cost_usd"],
+        } for s in filtered]
+        return json.dumps(result, indent=2)
+    finally:
+        db.close()
+
+
+def mcp_get_session_messages(args):
+    session_id = args.get("session_id")
+    if not session_id:
+        raise ValueError("session_id is required")
+    types = args.get("types", ["user", "assistant"])
+    db = get_db()
+    try:
+        all_msgs = get_messages(db, session_id)
+        filtered = [m for m in all_msgs if m["type"] in types]
+        result = [{
+            "uuid": m["uuid"], "type": m["type"], "role": m["role"],
+            "content_text": m["content_text"], "tool_name": m["tool_name"],
+            "timestamp": m["timestamp"], "sequence": m["sequence"],
+        } for m in filtered]
+        return json.dumps(result, indent=2)
+    finally:
+        db.close()
+
+
+def mcp_search_messages(args):
+    query = args.get("query")
+    if not query:
+        raise ValueError("query is required")
+    project_filter = args.get("project")
+    since = args.get("since")
+    limit = args.get("limit", 20)
+    db = get_db()
+    try:
+        sql = """
+            SELECT m.uuid, m.session_id, m.type, m.content_text, m.timestamp,
+                   s.name as session_name, s.cwd
+            FROM messages m
+            JOIN sessions s ON s.session_id = m.session_id
+            WHERE m.content_text LIKE ?
+        """
+        params = [f"%{query}%"]
+        if project_filter:
+            sql += " AND s.cwd LIKE ?"
+            params.append(f"%/{project_filter}")
+        if since:
+            sql += " AND m.timestamp >= ?"
+            params.append(since)
+        sql += " ORDER BY m.timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = db.execute(sql, params).fetchall()
+        result = []
+        for r in rows:
+            cwd = r["cwd"] or ""
+            project = cwd.rstrip("/").rsplit("/", 1)[-1] if cwd else ""
+            result.append({
+                "session_id": r["session_id"], "session_name": r["session_name"],
+                "project": project, "uuid": r["uuid"], "type": r["type"],
+                "content_text": (r["content_text"] or "")[:500], "timestamp": r["timestamp"],
+            })
+        return json.dumps(result, indent=2)
+    finally:
+        db.close()
+
+
+def mcp_get_stats(args):
+    project_filter = args.get("project")
+    since = args.get("since")
+    until = args.get("until")
+    db = get_db()
+    try:
+        all_sessions = get_sessions(db)
+        filtered = all_sessions
+        if project_filter:
+            filtered = [s for s in filtered if s["project"] == project_filter]
+        if since:
+            filtered = [s for s in filtered if s["started_at"] and s["started_at"] >= since]
+        if until:
+            filtered = [s for s in filtered if s["started_at"] and s["started_at"] <= until]
+        total_in = sum(s["total_input_tokens"] or 0 for s in filtered)
+        total_out = sum(s["total_output_tokens"] or 0 for s in filtered)
+        total_cache = sum((s["total_cache_write_tokens"] or 0) + (s["total_cache_read_tokens"] or 0) for s in filtered)
+        total_cost = sum(s["estimated_cost_usd"] or 0 for s in filtered)
+        # Top tools
+        session_ids = [s["session_id"] for s in filtered]
+        tool_counts = {}
+        if session_ids:
+            placeholders = ",".join("?" * len(session_ids))
+            rows = db.execute(
+                f"SELECT tool_name, COUNT(*) as cnt FROM messages WHERE session_id IN ({placeholders}) AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY cnt DESC LIMIT 10",
+                session_ids
+            ).fetchall()
+            tool_counts = [{"tool_name": r["tool_name"], "count": r["cnt"]} for r in rows]
+        # By project
+        by_project = {}
+        for s in filtered:
+            p = s["project"] or "Other"
+            by_project[p] = by_project.get(p, 0) + 1
+        result = {
+            "total_sessions": len(filtered), "total_messages": sum(s["message_count"] or 0 for s in filtered),
+            "total_input_tokens": total_in, "total_output_tokens": total_out,
+            "total_cache_tokens": total_cache, "total_cost_usd": round(total_cost, 4),
+            "top_tools": tool_counts,
+            "sessions_by_project": [{"project": k, "count": v} for k, v in sorted(by_project.items())],
+        }
+        return json.dumps(result, indent=2)
+    finally:
+        db.close()
+
+
+MCP_TOOL_HANDLERS = {
+    "list_projects": mcp_list_projects,
+    "list_sessions": mcp_list_sessions,
+    "get_session_messages": mcp_get_session_messages,
+    "search_messages": mcp_search_messages,
+    "get_stats": mcp_get_stats,
+}
+
+
+def handle_mcp(request_body):
+    """Handle a JSON-RPC MCP request. Returns a response dict."""
+    try:
+        req = json.loads(request_body)
+    except (json.JSONDecodeError, ValueError):
+        return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid JSON"}, "id": None}
+
+    req_id = req.get("id")
+    method = req.get("method", "")
+
+    if method == "initialize":
+        return {"jsonrpc": "2.0", "result": {
+            "protocolVersion": "2025-03-26",
+            "serverInfo": MCP_SERVER_INFO,
+            "capabilities": {"tools": {}},
+        }, "id": req_id}
+
+    if method == "notifications/initialized":
+        # Client acknowledgment, no response needed for notifications
+        return None
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "result": {"tools": MCP_TOOLS}, "id": req_id}
+
+    if method == "tools/call":
+        params = req.get("params", {})
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+        handler = MCP_TOOL_HANDLERS.get(tool_name)
+        if not handler:
+            return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"}, "id": req_id}
+        try:
+            text = handler(arguments)
+            return {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": text}]}, "id": req_id}
+        except ValueError as e:
+            return {"jsonrpc": "2.0", "error": {"code": -32602, "message": str(e)}, "id": req_id}
+        except Exception as e:
+            return {"jsonrpc": "2.0", "error": {"code": -32603, "message": str(e)}, "id": req_id}
+
+    return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}, "id": req_id}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -744,6 +1021,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "session_id": session_id, "name": name})
             finally:
                 db.close()
+        else:
+            self.send_error_json(404, "Not found")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/mcp":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+            except (ValueError, IOError):
+                self.send_error_json(400, "Bad request")
+                return
+            response = handle_mcp(body)
+            if response is None:
+                # Notification — send 202 with no body
+                self.send_response(202)
+                self.end_headers()
+                return
+            resp_body = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", len(resp_body))
+            self.end_headers()
+            self.wfile.write(resp_body)
         else:
             self.send_error_json(404, "Not found")
 
