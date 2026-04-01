@@ -145,6 +145,8 @@ a:hover { text-decoration: underline; }
 .sidebar { width: 280px; min-width: 280px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; overflow: hidden; }
 .sidebar-header { padding: 16px; border-bottom: 1px solid #30363d; }
 .sidebar-header h1 { font-size: 16px; font-weight: 600; margin-bottom: 10px; color: #e6edf3; }
+.project-filter { width: 100%; padding: 6px 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; font-size: 13px; outline: none; margin-bottom: 6px; cursor: pointer; }
+.project-filter:focus { border-color: #58a6ff; }
 .search-box { width: 100%; padding: 6px 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; font-size: 13px; outline: none; }
 .search-box:focus { border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88,166,255,0.15); }
 .search-box::placeholder { color: #484f58; }
@@ -228,6 +230,7 @@ a:hover { text-decoration: underline; }
 <div class="sidebar">
   <div class="sidebar-header">
     <h1>Breadcrumbs</h1>
+    <select class="project-filter" id="projectFilter"><option value="">All projects</option></select>
     <input type="text" class="search-box" id="search" placeholder="Search sessions... (/)">
   </div>
   <div class="session-list" id="sessionList"></div>
@@ -243,6 +246,7 @@ a:hover { text-decoration: underline; }
 let sessions = [];
 let currentSessionId = null;
 let imagesExpanded = true;
+let selectedProject = '';
 
 function esc(s) {
   if (!s) return '';
@@ -310,15 +314,37 @@ async function fetchSessions() {
   try {
     var res = await fetch('/api/sessions');
     sessions = await res.json();
+    populateProjectFilter();
     renderSidebar();
   } catch(e) {
     console.error('Failed to fetch sessions:', e);
   }
 }
 
+function populateProjectFilter() {
+  var projects = [];
+  sessions.forEach(function(s) {
+    if (s.project && projects.indexOf(s.project) === -1) projects.push(s.project);
+  });
+  projects.sort();
+  var sel = document.getElementById('projectFilter');
+  var current = sel.value;
+  sel.innerHTML = '<option value="">All projects (' + sessions.length + ')</option>';
+  projects.forEach(function(p) {
+    var count = sessions.filter(function(s) { return s.project === p; }).length;
+    sel.innerHTML += '<option value="' + esc(p) + '"' + (p === current ? ' selected' : '') + '>' + esc(p) + ' (' + count + ')</option>';
+  });
+}
+
+document.getElementById('projectFilter').addEventListener('change', function(e) {
+  selectedProject = e.target.value;
+  renderSidebar();
+});
+
 function renderSidebar(filter) {
   filter = (filter || '').toLowerCase();
   var list = sessions.filter(function(s) {
+    if (selectedProject && s.project !== selectedProject) return false;
     if (!filter) return true;
     return (s.name || '').toLowerCase().includes(filter) ||
            (s.project || '').toLowerCase().includes(filter) ||
