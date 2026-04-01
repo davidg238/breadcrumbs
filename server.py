@@ -12,11 +12,14 @@ from urllib.parse import urlparse
 
 DB_PATH = Path.home() / ".claude" / "breadcrumbs.db"
 
-MODEL_PRICING = {
+DEFAULT_PRICING = {
     "claude-opus-4-6":   {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.50},
     "claude-sonnet-4-6": {"input": 3.0,  "output": 15.0, "cache_write": 3.75,  "cache_read": 0.30},
     "claude-haiku-4-5":  {"input": 0.8,  "output": 4.0,  "cache_write": 1.0,   "cache_read": 0.08},
 }
+
+# Active pricing — updated by CLI args or defaults to per-model rates
+MODEL_PRICING = dict(DEFAULT_PRICING)
 
 
 def get_db():
@@ -32,7 +35,7 @@ def get_db():
 
 
 def compute_cost(model, usage):
-    pricing = MODEL_PRICING.get(model)
+    pricing = MODEL_PRICING.get(model) or MODEL_PRICING.get("_override")
     if not pricing or not usage:
         return None
     return (
@@ -503,7 +506,7 @@ function renderProjectSummary() {
 
   var html = '<div class="summary-wrap">';
   html += '<table class="summary-table">';
-  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th><th class="num">Est. Cost</th></tr></thead>';
+  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th><th class="num">Est. Cost*</th></tr></thead>';
   html += '<tbody>';
   sorted.forEach(function(p) {
     var pr = projects[p];
@@ -534,7 +537,8 @@ function renderProjectSummary() {
   html += '<td class="num cost">$' + totals.cost.toFixed(2) + '</td>';
   html += '</tr></tfoot>';
   html += '</table>';
-  html += '<div style="margin-top:16px;padding:8px 12px;background:#161b22;border-radius:6px;font-size:12px;color:#8b949e;">';
+  html += '<div style="margin-top:12px;font-size:11px;color:#484f58;">*Cost estimated from token counts using current pricing. Override with <code style="color:#8b949e;">--price-in --price-out --price-cache</code> ($/MTok)</div>';
+  html += '<div style="margin-top:12px;padding:8px 12px;background:#161b22;border-radius:6px;font-size:12px;color:#8b949e;">';
   html += 'MCP endpoint: <code style="color:#58a6ff;cursor:pointer;user-select:all;">http://localhost:' + location.port + '/mcp</code>';
   html += '</div>';
   html += '</div>';
@@ -1055,10 +1059,37 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Breadcrumbs Viewer")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--no-open", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="Breadcrumbs Viewer — browse Claude Code session history",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""pricing overrides ($/MTok, applied to all models):
+  python3 server.py --price-in 15 --price-out 75 --price-cache 1.50
+
+defaults (per model):
+  opus:   in=$15  out=$75  cache-write=$18.75  cache-read=$1.50
+  sonnet: in=$3   out=$15  cache-write=$3.75   cache-read=$0.30
+  haiku:  in=$0.80 out=$4  cache-write=$1.00   cache-read=$0.08""",
+    )
+    parser.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
+    parser.add_argument("--no-open", action="store_true", help="don't open browser")
+    parser.add_argument("--price-in", type=float, metavar="$", help="input token price $/MTok")
+    parser.add_argument("--price-out", type=float, metavar="$", help="output token price $/MTok")
+    parser.add_argument("--price-cache", type=float, metavar="$", help="cache read token price $/MTok")
     args = parser.parse_args()
+
+    # Apply pricing overrides
+    if args.price_in or args.price_out or args.price_cache:
+        override = {
+            "input": args.price_in or 15.0,
+            "output": args.price_out or 75.0,
+            "cache_write": (args.price_cache or 1.50) * 12.5,  # write ~12.5x read
+            "cache_read": args.price_cache or 1.50,
+        }
+        # Apply to all models + a fallback for unknown models
+        for model in list(MODEL_PRICING.keys()):
+            MODEL_PRICING[model] = override
+        MODEL_PRICING["_override"] = override
+        print(f"Pricing override: in=${override['input']}/MTok out=${override['output']}/MTok cache=${args.price_cache or 1.50}/MTok")
 
     if not DB_PATH.exists():
         print(f"Database not found: {DB_PATH}")
