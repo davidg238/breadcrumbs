@@ -21,6 +21,7 @@ CLAUDE_DIR = Path.home() / ".claude"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id   TEXT PRIMARY KEY,
+    name         TEXT,
     project      TEXT,
     cwd          TEXT,
     model        TEXT,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS messages (
     model        TEXT,
     timestamp    TEXT NOT NULL,
     sequence     INTEGER,
+    usage_json   TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
 
@@ -168,16 +170,16 @@ def upsert_session(db, session_id, cwd, project=None, model=None,
 
 def upsert_message(db, uuid, session_id, parent_uuid, msg_type, role,
                    content_text, tool_name, tool_input, tool_result,
-                   model, timestamp, sequence):
+                   model, timestamp, sequence, usage_json=None):
     """Insert or ignore a message row (idempotent by UUID)."""
     db.execute("""
         INSERT OR REPLACE INTO messages
             (uuid, session_id, parent_uuid, type, role, content_text,
-             tool_name, tool_input, tool_result, model, timestamp, sequence)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tool_name, tool_input, tool_result, model, timestamp, sequence, usage_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (uuid, session_id, parent_uuid, msg_type, role,
           content_text, tool_name, tool_input, tool_result,
-          model, timestamp, sequence))
+          model, timestamp, sequence, usage_json))
 
 
 def upsert_image(db, message_uuid, image_index, media_type, data, img_hash):
@@ -292,6 +294,8 @@ def handle_sync(hook_input):
             role = msg.get("role")
             content = msg.get("content", "")
             model = msg.get("model")
+            usage = msg.get("usage")
+            usage_json_str = json.dumps(usage) if usage else None
 
             content_text = extract_text(content)
             tool_name, tool_input = extract_tool_use(content)
@@ -309,6 +313,7 @@ def handle_sync(hook_input):
                 model=model,
                 timestamp=ts,
                 sequence=sequence,
+                usage_json=usage_json_str,
             )
 
             # Extract images
