@@ -532,6 +532,9 @@ function renderProjectSummary() {
   html += '<span>Tokens Out: <span class="val">' + fmtNum(totals.toks_out) + '</span></span>';
   html += '<span>Total Cost: <span class="cost">$' + totals.cost.toFixed(2) + '</span></span>';
   html += '</div>';
+  html += '<div style="margin-top:16px;padding:8px 12px;background:#161b22;border-radius:6px;font-size:12px;color:#8b949e;">';
+  html += 'MCP endpoint: <code style="color:#58a6ff;cursor:pointer;user-select:all;">http://localhost:' + location.port + '/mcp</code>';
+  html += '</div>';
   html += '</div>';
 
   container.innerHTML = html;
