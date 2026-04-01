@@ -7,7 +7,7 @@ Breadcrumbs changes that:
 - **Indexes all your history into SQLite** — `install.py` bulk-imports every existing session across all projects. SQL queries, full-text search, cost tracking, cross-project analysis — all instant instead of parsing flat files.
 - **Keeps it current with hooks** — every new prompt and response is recorded automatically. The database stays in sync with your active sessions, even across multiple Claude Code instances.
 - **Browse it in your browser** — `server.py` serves a local web UI with a session list, conversation viewer, cost tracking, and project filtering.
-- **MCP endpoint (planned)** — an agent will be able to query your entire development history: "what bugs did we fix last week?", "how did this architecture evolve?", "what patterns repeat across projects?". Project diaries, decision logs, knowledge extraction — all from data you're already generating.
+- **MCP endpoint for agents** — any MCP-capable agent can query your entire development history: "what bugs did we fix last week?", "how did this architecture evolve?", "what patterns repeat across projects?". Project diaries, decision logs, knowledge extraction — all from data you're already generating.
 
 The raw material has been there all along. Breadcrumbs just makes it accessible.
 
@@ -69,6 +69,33 @@ Features:
 - Session cost tracking (input, output, cache tokens)
 - Editable session names (click the name in the status bar)
 - Keyboard: `/` to search, Up/Down to navigate sessions, Escape to blur
+
+## MCP Endpoint
+
+The viewer includes an MCP server at `http://localhost:8765/mcp` (shown on the landing page). Any MCP-capable agent can query your session history.
+
+**Setup:** Add to `~/.claude/settings.json` (with `server.py` running):
+
+```json
+{
+  "mcpServers": {
+    "breadcrumbs": {
+      "type": "url",
+      "url": "http://localhost:8765/mcp"
+    }
+  }
+}
+```
+
+**Available tools:**
+
+| Tool | Description |
+|---|---|
+| `list_projects` | All projects with session counts, date ranges, total cost |
+| `list_sessions` | Sessions filtered by project, date range |
+| `get_session_messages` | Full conversation for a session |
+| `search_messages` | Full-text search across all sessions |
+| `get_stats` | Aggregate stats: tokens, cost, top tools used |
 
 ## Querying
 
