@@ -59,6 +59,8 @@ def get_sessions(db):
         total_input = total_output = total_cache_write = total_cache_read = 0
         session_model = r["model"]
         for ur in usage_rows:
+            if not session_model and ur["model"]:
+                session_model = ur["model"]
             u = json.loads(ur["usage_json"])
             total_input += u.get("input_tokens", 0)
             total_output += u.get("output_tokens", 0)
