@@ -1,8 +1,15 @@
 # Breadcrumbs
 
-Records all Claude Code sessions into a SQLite database for cross-project analysis.
+Claude Code already saves every session to disk as JSONL transcript files. You just can't easily browse or search them.
 
-Captures prompts, responses, tool usage, and screenshots — everything needed to trace product evolution, bugs, and development patterns across projects.
+Breadcrumbs changes that:
+
+- **Indexes all your history into SQLite** — `install.py` bulk-imports every existing session across all projects. SQL queries, full-text search, cost tracking, cross-project analysis — all instant instead of parsing flat files.
+- **Keeps it current with hooks** — every new prompt and response is recorded automatically. The database stays in sync with your active sessions, even across multiple Claude Code instances.
+- **Browse it in your browser** — `server.py` serves a local web UI with a session list, conversation viewer, cost tracking, and project filtering.
+- **MCP endpoint (planned)** — an agent will be able to query your entire development history: "what bugs did we fix last week?", "how did this architecture evolve?", "what patterns repeat across projects?". Project diaries, decision logs, knowledge extraction — all from data you're already generating.
+
+The raw material has been there all along. Breadcrumbs just makes it accessible.
 
 ## Requirements
 
