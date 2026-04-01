@@ -173,9 +173,9 @@ a:hover { text-decoration: underline; }
 
 .messages { flex: 1; overflow-y: auto; padding: 16px; }
 .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: #484f58; font-size: 16px; }
-.summary-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.summary-table th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #30363d; color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-.summary-table td { padding: 6px 12px; border-bottom: 1px solid #21262d; }
+.summary-table { border-collapse: collapse; font-size: 13px; }
+.summary-table th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #30363d; color: #8b949e; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+.summary-table td { padding: 6px 12px; border-bottom: 1px solid #21262d; white-space: nowrap; }
 .summary-table tr:hover { background: #161b22; }
 .summary-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .summary-table .cost { color: #3fb950; }
