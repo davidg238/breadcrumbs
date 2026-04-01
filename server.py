@@ -427,7 +427,7 @@ async function selectSession(sessionId) {
   if (session.started_at) parts.push('<span class="stat"><span class="stat-label">Started:</span> ' + esc(session.started_at.replace('T', ' ').substring(0, 19)) + '</span>');
   var totalTokens = (session.total_input_tokens || 0) + (session.total_output_tokens || 0);
   if (totalTokens > 0) parts.push('<span class="stat"><span class="stat-label">Tokens:</span> ' + fmtNum(session.total_input_tokens) + ' in / ' + fmtNum(session.total_output_tokens) + ' out</span>');
-  if (session.estimated_cost_usd != null) parts.push('<span class="stat"><span class="stat-label">Cost:</span> $' + session.estimated_cost_usd.toFixed(4) + '</span>');
+  if (session.estimated_cost_usd != null) parts.push('<span class="stat"><span class="stat-label">Est. Cost:</span> $' + session.estimated_cost_usd.toFixed(4) + '</span>');
   var imgBtnClass = imagesExpanded ? ' active' : '';
   parts.push('<span class="btn' + imgBtnClass + '" onclick="toggleImageDefault()">Images</span>');
   bar.innerHTML = parts.join('');
@@ -503,7 +503,7 @@ function renderProjectSummary() {
 
   var html = '<div class="summary-wrap">';
   html += '<table class="summary-table">';
-  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th><th class="num">Cost</th></tr></thead>';
+  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th><th class="num">Est. Cost</th></tr></thead>';
   html += '<tbody>';
   sorted.forEach(function(p) {
     var pr = projects[p];
@@ -523,15 +523,17 @@ function renderProjectSummary() {
     html += '<td class="num cost">$' + pr.cost.toFixed(2) + '</td>';
     html += '</tr>';
   });
-  html += '</tbody></table>';
-
-  html += '<div class="summary-totals">';
-  html += '<span>Sessions: <span class="val">' + totals.sessions + '</span></span>';
-  html += '<span>Tokens In: <span class="val">' + fmtNum(totals.toks_in) + '</span></span>';
-  html += '<span>Cached: <span class="val">' + fmtNum(totals.toks_cached) + '</span></span>';
-  html += '<span>Tokens Out: <span class="val">' + fmtNum(totals.toks_out) + '</span></span>';
-  html += '<span>Total Cost: <span class="cost">$' + totals.cost.toFixed(2) + '</span></span>';
-  html += '</div>';
+  html += '</tbody>';
+  html += '<tfoot><tr style="border-top:2px solid #30363d;font-weight:600;">';
+  html += '<td>Total</td>';
+  html += '<td class="num">' + totals.sessions + '</td>';
+  html += '<td></td><td></td>';
+  html += '<td class="num">' + fmtNum(totals.toks_in) + '</td>';
+  html += '<td class="num">' + fmtNum(totals.toks_cached) + '</td>';
+  html += '<td class="num">' + fmtNum(totals.toks_out) + '</td>';
+  html += '<td class="num cost">$' + totals.cost.toFixed(2) + '</td>';
+  html += '</tr></tfoot>';
+  html += '</table>';
   html += '<div style="margin-top:16px;padding:8px 12px;background:#161b22;border-radius:6px;font-size:12px;color:#8b949e;">';
   html += 'MCP endpoint: <code style="color:#58a6ff;cursor:pointer;user-select:all;">http://localhost:' + location.port + '/mcp</code>';
   html += '</div>';
