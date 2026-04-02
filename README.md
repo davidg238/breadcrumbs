@@ -139,3 +139,9 @@ server.py            — web viewer (run manually to browse sessions)
 install.py           — sets up hooks in Claude Code settings
 uninstall.py         — removes hooks, preserves database
 ```
+## TODO / Limitations / Notes
+
+*   **Operating Systems:** This tool has currently only been formally tested on Ubuntu 24.04 (Linux). However, because it relies wholly on Python's standard library, it should work on macOS and Windows as well.
+*   **UI Limitations:** The web interface currently lacks session management features. It is not possible to delete sessions, clear history, or rename/favorite sessions directly from the UI (besides editing the current session name).
+*   **Hardcoded Model Pricing:** Token costs in `server.py` are hardcoded for specific model versions (e.g., `claude-opus-4-6`). This requires manual updates whenever Anthropic changes models or pricing, risking inaccurate cost estimates over time.
+*   **Security Concerns:** The `server.py` web server lacks authentication and binds strictly to localhost (`127.0.0.1`). While this prevents access from the wider network, if run on a shared development machine or remote server, any other user logged into that same machine can access your chat history without authenticating.

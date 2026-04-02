@@ -13,8 +13,10 @@ SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 SCRIPT_NAME = "session_recorder.py"
 SOURCE = Path(__file__).parent / SCRIPT_NAME
 DEST = HOOKS_DIR / SCRIPT_NAME
+import os
 
-HOOK_COMMAND = f"python3 {DEST}"
+PYTHON_CMD = "python" if os.name == "nt" else "python3"
+HOOK_COMMAND = f"{PYTHON_CMD} {DEST}"
 
 HOOKS_CONFIG = {
     "UserPromptSubmit": [
@@ -76,16 +78,26 @@ def main():
             if not project_dir.is_dir():
                 continue
             slug = project_dir.name
-            # Derive cwd from slug: -home-david-foo -> /home/david/foo
-            cwd = slug.replace("-", "/", 1) if slug.startswith("-") else slug
-            # Fix: only first char was a -, rest need selective replacement
-            # Slug format is cwd.replace("/", "-"), so reverse it
-            cwd = slug.replace("-", "/")
-            if not cwd.startswith("/"):
-                cwd = "/" + cwd
             count = 0
             for jsonl in project_dir.glob("*.jsonl"):
                 session_id = jsonl.stem
+                cwd = None
+                
+                # Derive real cwd from the first entry in the jsonl transcript
+                try:
+                    with open(jsonl, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            data = json.loads(line)
+                            if "cwd" in data:
+                                cwd = data["cwd"]
+                                break
+                except Exception:
+                    pass
+                
+                # Fallback if unable to read
+                if not cwd:
+                    cwd = "/" + slug.replace("-", "/")
+
                 input_json = json.dumps({"session_id": session_id, "cwd": cwd})
                 subprocess.run(
                     [sys.executable, str(DEST), "sync"],
