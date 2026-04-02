@@ -11,6 +11,8 @@ Breadcrumbs changes that:
 
 The raw material has been there all along. Breadcrumbs just makes it accessible.
 
+Inspired by [Shelley](https://github.com/boldsoftware/shelley)'s approach to recording agent sessions in SQLite.
+
 ## Requirements
 
 - Python 3.6+
