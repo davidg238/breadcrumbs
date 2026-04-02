@@ -113,6 +113,7 @@ def main():
 
     print("\nBreadcrumbs installed. Restart Claude Code for hooks to take effect.")
     print(f"Database: {CLAUDE_DIR / 'breadcrumbs.db'}")
+    print("To browse your history, run: python3 server.py (opens http://localhost:8765 by default)")
 
 
 if __name__ == "__main__":
