@@ -21,7 +21,7 @@ No additional packages needed — stdlib only.
 ## Install
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/davidg238/breadcrumbs.git
 cd breadcrumbs
 python3 install.py
 ```
