@@ -65,6 +65,16 @@ result=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_sess
 empty_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
 check "list_sessions filters by project" "0" "$empty_count"
 
+# Previews
+result=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":1,"include_previews":true}},"id":120}')
+has_preview=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); sessions=json.loads(r['result']['content'][0]['text']); print('true' if sessions and 'last_user_message' in sessions[0] and 'last_assistant_message' in sessions[0] else 'false')")
+check "list_sessions include_previews adds preview fields" "true" "$has_preview"
+
+# Default: no previews
+result=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":1}},"id":121}')
+no_preview=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); sessions=json.loads(r['result']['content'][0]['text']); print('true' if sessions and 'last_user_message' not in sessions[0] else 'false')")
+check "list_sessions without flag omits preview fields" "true" "$no_preview"
+
 # Get a real session_id for testing
 session_id=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":1}},"id":13}' \
   | python3 -c "import sys,json; r=json.load(sys.stdin); sessions=json.loads(r['result']['content'][0]['text']); print(sessions[0]['session_id'])")

@@ -685,7 +685,7 @@ MCP_TOOLS = [
     },
     {
         "name": "list_sessions",
-        "description": "List sessions, optionally filtered by project and date range",
+        "description": "List sessions, optionally filtered by project and date range. Set include_previews=true to attach truncated last_user_message and last_assistant_message to each session.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -693,6 +693,7 @@ MCP_TOOLS = [
                 "since": {"type": "string", "description": "ISO date, sessions after this date"},
                 "until": {"type": "string", "description": "ISO date, sessions before this date"},
                 "limit": {"type": "integer", "description": "Max sessions to return (default 20)"},
+                "include_previews": {"type": "boolean", "description": "Attach last_user_message and last_assistant_message (truncated to 500 chars) to each session. Default false."},
             },
             "required": [],
         },
@@ -770,6 +771,22 @@ def mcp_list_projects(args):
         db.close()
 
 
+PREVIEW_MAX_CHARS = 500
+
+
+def _last_message_of_type(db, session_id, msg_type):
+    row = db.execute(
+        "SELECT content_text FROM messages WHERE session_id = ? AND type = ? "
+        "AND content_text IS NOT NULL AND content_text != '' "
+        "ORDER BY sequence DESC LIMIT 1",
+        (session_id, msg_type),
+    ).fetchone()
+    if not row:
+        return None
+    text = row["content_text"] or ""
+    return text[:PREVIEW_MAX_CHARS]
+
+
 def mcp_list_sessions(args):
     db = get_db()
     try:
@@ -783,12 +800,19 @@ def mcp_list_sessions(args):
             filtered = [s for s in filtered if s["started_at"] and s["started_at"] <= args["until"]]
         limit = args.get("limit", 20)
         filtered = filtered[:limit]
-        result = [{
-            "session_id": s["session_id"], "name": s["name"], "project": s["project"],
-            "model": s["model"], "started_at": s["started_at"],
-            "duration_seconds": s["duration_seconds"], "message_count": s["message_count"],
-            "estimated_cost_usd": s["estimated_cost_usd"],
-        } for s in filtered]
+        include_previews = bool(args.get("include_previews"))
+        result = []
+        for s in filtered:
+            row = {
+                "session_id": s["session_id"], "name": s["name"], "project": s["project"],
+                "model": s["model"], "started_at": s["started_at"],
+                "duration_seconds": s["duration_seconds"], "message_count": s["message_count"],
+                "estimated_cost_usd": s["estimated_cost_usd"],
+            }
+            if include_previews:
+                row["last_user_message"] = _last_message_of_type(db, s["session_id"], "user")
+                row["last_assistant_message"] = _last_message_of_type(db, s["session_id"], "assistant")
+            result.append(row)
         return json.dumps(result, indent=2)
     finally:
         db.close()
