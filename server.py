@@ -1058,7 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="Breadcrumbs Viewer — browse Claude Code session history")
     parser.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
-    parser.add_argument("--no-open", action="store_true", help="don't open browser")
+    parser.add_argument("--open", action="store_true", help="open browser on start")
     args = parser.parse_args()
 
     if not DB_PATH.exists():
@@ -1081,7 +1081,7 @@ def main():
     print(f"Breadcrumbs viewer: {url}")
     print("Press Ctrl+C to stop")
 
-    if not args.no_open:
+    if args.open:
         webbrowser.open(url)
 
     try:

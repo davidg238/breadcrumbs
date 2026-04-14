@@ -59,9 +59,9 @@ Data is stored in `~/.claude/breadcrumbs.db` with three tables:
 Browse sessions in your browser:
 
 ```bash
-python3 server.py                    # opens browser automatically
+python3 server.py                    # start viewer
+python3 server.py --open             # also open browser
 python3 server.py --port 9000        # custom port
-python3 server.py --no-open          # don't auto-open browser
 ```
 
 Features:
@@ -71,6 +71,48 @@ Features:
 - Session cost tracking (input, output, cache tokens)
 - Editable session names (click the name in the status bar)
 - Keyboard: `/` to search, Up/Down to navigate sessions, Escape to blur
+
+## Run as a Service (Linux)
+
+To have the viewer start automatically at login and run in the background, install it as a systemd user service.
+
+Create `~/.config/systemd/user/breadcrumbs.service`:
+
+```ini
+[Unit]
+Description=Breadcrumbs Viewer (Claude Code session history)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/path/to/breadcrumbs/server.py --port 8765
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Replace `%h/path/to/breadcrumbs` with the absolute path to your clone. Then:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now breadcrumbs.service
+loginctl enable-linger $USER       # keep it running when logged out (may need sudo)
+```
+
+Manage it:
+
+```bash
+systemctl --user status breadcrumbs
+systemctl --user restart breadcrumbs
+journalctl --user -u breadcrumbs -f
+```
+
+The server binds to `127.0.0.1` only — not reachable over the network.
+
+**macOS:** use `launchd` with a `~/Library/LaunchAgents/com.breadcrumbs.plist` file instead.
+**Windows:** use Task Scheduler with trigger "At log on", or run `server.py` via `pythonw.exe` from the Startup folder.
 
 ## MCP Endpoint
 
