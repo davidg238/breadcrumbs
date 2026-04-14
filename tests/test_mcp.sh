@@ -87,6 +87,23 @@ result=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\
 tail_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
 check "get_session_messages negative offset returns tail" "true" "$([ "$tail_count" -le 2 ] && echo true || echo false)"
 
+# Verify the tail UUIDs match the last 2 UUIDs from the full message list
+result_full=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_session_messages\",\"arguments\":{\"session_id\":\"$session_id\",\"limit\":9999,\"offset\":0}},\"id\":141}")
+uuid_match=$(TAIL_JSON="$result" FULL_JSON="$result_full" python3 -c "
+import os, json
+
+tail_msgs = json.loads(json.loads(os.environ['TAIL_JSON'])['result']['content'][0]['text'])
+full_msgs = json.loads(json.loads(os.environ['FULL_JSON'])['result']['content'][0]['text'])
+
+if len(full_msgs) < 2:
+    print('skipped')
+else:
+    tail_uuids = [m['uuid'] for m in tail_msgs]
+    expected_uuids = [m['uuid'] for m in full_msgs[-2:]]
+    print('true' if tail_uuids == expected_uuids else 'false (tail=' + str(tail_uuids) + ' expected=' + str(expected_uuids) + ')')
+")
+[ "$uuid_match" = "skipped" ] || check "get_session_messages negative offset UUIDs match tail of full list" "true" "$uuid_match"
+
 # Default cap: no limit specified → response is capped (default 100)
 result=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_session_messages\",\"arguments\":{\"session_id\":\"$session_id\"}},\"id\":142}")
 default_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
