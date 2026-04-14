@@ -129,6 +129,11 @@ search_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.std
 check "search_messages returns results" "true" "$([ "$search_count" -gt 0 ] && echo true || echo false)"
 check "search_messages respects limit" "true" "$([ "$search_count" -le 5 ] && echo true || echo false)"
 
+# session_id filter
+result=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"search_messages\",\"arguments\":{\"query\":\"the\",\"session_id\":\"$session_id\",\"limit\":10}},\"id\":150}")
+all_same_session=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); hits=json.loads(r['result']['content'][0]['text']); print('true' if hits and all(h['session_id']=='$session_id' for h in hits) else ('empty' if not hits else 'false'))")
+check "search_messages session_id filter scopes to one session" "true" "$([ "$all_same_session" = "true" ] || [ "$all_same_session" = "empty" ] && echo true || echo false)"
+
 result=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_stats","arguments":{}},"id":16}')
 total_sessions=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); stats=json.loads(r['result']['content'][0]['text']); print(stats['total_sessions'])")
 check "get_stats returns session count" "true" "$([ "$total_sessions" -gt 0 ] && echo true || echo false)"

@@ -718,12 +718,13 @@ MCP_TOOLS = [
     },
     {
         "name": "search_messages",
-        "description": "Full-text search across all session messages",
+        "description": "Full-text search across session messages. Pass session_id to scope to a single session.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Text to search for"},
                 "project": {"type": "string", "description": "Filter by project name"},
+                "session_id": {"type": "string", "description": "Scope search to a single session"},
                 "since": {"type": "string", "description": "ISO date, messages after this date"},
                 "limit": {"type": "integer", "description": "Max results (default 20)"},
             },
@@ -854,6 +855,7 @@ def mcp_search_messages(args):
     if not query:
         raise ValueError("query is required")
     project_filter = args.get("project")
+    session_id_filter = args.get("session_id")
     since = args.get("since")
     limit = args.get("limit", 20)
     db = get_db()
@@ -869,6 +871,9 @@ def mcp_search_messages(args):
         if project_filter:
             sql += " AND s.cwd LIKE ?"
             params.append(f"%/{project_filter}")
+        if session_id_filter:
+            sql += " AND m.session_id = ?"
+            params.append(session_id_filter)
         if since:
             sql += " AND m.timestamp >= ?"
             params.append(since)
