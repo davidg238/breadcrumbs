@@ -77,6 +77,21 @@ check "get_session_messages returns messages" "true" "$([ "$msg_count" -gt 0 ] &
 msg_types=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); msgs=json.loads(r['result']['content'][0]['text']); print(' '.join(sorted(set(m['type'] for m in msgs))))")
 check "get_session_messages defaults to user+assistant" "true" "$(echo "$msg_types" | grep -v tool_result | grep -v system_injection | grep -v progress > /dev/null && echo true || echo false)"
 
+# Pagination: limit
+result=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_session_messages\",\"arguments\":{\"session_id\":\"$session_id\",\"limit\":3}},\"id\":140}")
+limited_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
+check "get_session_messages respects limit" "true" "$([ "$limited_count" -le 3 ] && echo true || echo false)"
+
+# Pagination: negative offset returns tail
+result=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_session_messages\",\"arguments\":{\"session_id\":\"$session_id\",\"offset\":-2,\"limit\":2}},\"id\":141}")
+tail_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
+check "get_session_messages negative offset returns tail" "true" "$([ "$tail_count" -le 2 ] && echo true || echo false)"
+
+# Default cap: no limit specified → response is capped (default 100)
+result=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_session_messages\",\"arguments\":{\"session_id\":\"$session_id\"}},\"id\":142}")
+default_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
+check "get_session_messages default caps at 100" "true" "$([ "$default_count" -le 100 ] && echo true || echo false)"
+
 result=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"search_messages","arguments":{"query":"the","limit":5}},"id":15}')
 search_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
 check "search_messages returns results" "true" "$([ "$search_count" -gt 0 ] && echo true || echo false)"

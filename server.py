@@ -699,7 +699,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_session_messages",
-        "description": "Get all messages for a session. Returns user prompts and assistant responses by default.",
+        "description": "Get messages for a session. Returns user prompts and assistant responses by default. Supports pagination via limit/offset (negative offset = from end, e.g. offset=-20 returns the last 20 messages after type filtering).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -709,6 +709,8 @@ MCP_TOOLS = [
                     "items": {"type": "string"},
                     "description": "Message types to include (default: ['user', 'assistant'])",
                 },
+                "limit": {"type": "integer", "description": "Max messages to return (default 100)"},
+                "offset": {"type": "integer", "description": "Offset into filtered messages. Negative values count from the end (default 0)"},
             },
             "required": ["session_id"],
         },
@@ -797,15 +799,24 @@ def mcp_get_session_messages(args):
     if not session_id:
         raise ValueError("session_id is required")
     types = args.get("types", ["user", "assistant"])
+    limit = args.get("limit", 100)
+    offset = args.get("offset", 0)
     db = get_db()
     try:
         all_msgs = get_messages(db, session_id)
         filtered = [m for m in all_msgs if m["type"] in types]
+        total = len(filtered)
+        if offset < 0:
+            start = max(0, total + offset)
+        else:
+            start = min(offset, total)
+        end = min(start + limit, total)
+        page = filtered[start:end]
         result = [{
             "uuid": m["uuid"], "type": m["type"], "role": m["role"],
             "content_text": m["content_text"], "tool_name": m["tool_name"],
             "timestamp": m["timestamp"], "sequence": m["sequence"],
-        } for m in filtered]
+        } for m in page]
         return json.dumps(result, indent=2)
     finally:
         db.close()
