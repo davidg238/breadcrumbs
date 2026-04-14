@@ -119,6 +119,11 @@ result=$(rpc "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\
 default_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
 check "get_session_messages default caps at 100" "true" "$([ "$default_count" -le 100 ] && echo true || echo false)"
 
+# Cap: include_previews=true with large limit should return <= 50 sessions
+result=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":200,"include_previews":true}},"id":122}')
+capped_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
+check "list_sessions caps at 50 when include_previews=true" "true" "$([ "$capped_count" -le 50 ] && echo true || echo false)"
+
 result=$(rpc '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"search_messages","arguments":{"query":"the","limit":5}},"id":15}')
 search_count=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(json.loads(r['result']['content'][0]['text'])))")
 check "search_messages returns results" "true" "$([ "$search_count" -gt 0 ] && echo true || echo false)"

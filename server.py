@@ -693,7 +693,7 @@ MCP_TOOLS = [
                 "since": {"type": "string", "description": "ISO date, sessions after this date"},
                 "until": {"type": "string", "description": "ISO date, sessions before this date"},
                 "limit": {"type": "integer", "description": "Max sessions to return (default 20)"},
-                "include_previews": {"type": "boolean", "description": "Attach last_user_message and last_assistant_message (truncated to 500 chars) to each session. Default false."},
+                "include_previews": {"type": "boolean", "description": "Attach last_user_message and last_assistant_message (truncated to 500 chars) to each session. Default false. When set, limit is capped at 50 due to per-session query cost."},
             },
             "required": [],
         },
@@ -772,6 +772,7 @@ def mcp_list_projects(args):
 
 
 PREVIEW_MAX_CHARS = 500
+PREVIEW_MAX_SESSIONS = 50
 
 
 def _last_message_of_type(db, session_id, msg_type):
@@ -798,9 +799,11 @@ def mcp_list_sessions(args):
             filtered = [s for s in filtered if s["started_at"] and s["started_at"] >= args["since"]]
         if args.get("until"):
             filtered = [s for s in filtered if s["started_at"] and s["started_at"] <= args["until"]]
-        limit = args.get("limit", 20)
-        filtered = filtered[:limit]
         include_previews = bool(args.get("include_previews"))
+        limit = args.get("limit", 20)
+        if include_previews:
+            limit = min(limit, PREVIEW_MAX_SESSIONS)
+        filtered = filtered[:limit]
         result = []
         for s in filtered:
             row = {
