@@ -136,9 +136,9 @@ The viewer includes an MCP server at `http://localhost:8765/mcp` (shown on the l
 | Tool | Description |
 |---|---|
 | `list_projects` | All projects with session counts, date ranges, total cost |
-| `list_sessions` | Sessions filtered by project, date range |
-| `get_session_messages` | Full conversation for a session |
-| `search_messages` | Full-text search across all sessions |
+| `list_sessions` | Sessions filtered by project, date range; optional `include_previews` |
+| `get_session_messages` | Messages for a session; supports `limit` / `offset` (negative offset = tail) |
+| `search_messages` | Full-text search; optional `session_id` scope |
 | `get_stats` | Aggregate stats: tokens, cost, top tools used |
 
 ## Querying

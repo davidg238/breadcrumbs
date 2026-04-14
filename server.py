@@ -685,7 +685,7 @@ MCP_TOOLS = [
     },
     {
         "name": "list_sessions",
-        "description": "List sessions, optionally filtered by project and date range",
+        "description": "List sessions, optionally filtered by project and date range. Set include_previews=true to attach truncated last_user_message and last_assistant_message to each session.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -693,13 +693,14 @@ MCP_TOOLS = [
                 "since": {"type": "string", "description": "ISO date, sessions after this date"},
                 "until": {"type": "string", "description": "ISO date, sessions before this date"},
                 "limit": {"type": "integer", "description": "Max sessions to return (default 20)"},
+                "include_previews": {"type": "boolean", "description": "Attach last_user_message and last_assistant_message (truncated to 500 chars) to each session. Default false. When set, limit is capped at 50 due to per-session query cost."},
             },
             "required": [],
         },
     },
     {
         "name": "get_session_messages",
-        "description": "Get all messages for a session. Returns user prompts and assistant responses by default.",
+        "description": "Get messages for a session. Returns user prompts and assistant responses by default. Supports pagination via limit/offset (negative offset = from end, e.g. offset=-20 returns the last 20 messages after type filtering).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -709,18 +710,21 @@ MCP_TOOLS = [
                     "items": {"type": "string"},
                     "description": "Message types to include (default: ['user', 'assistant'])",
                 },
+                "limit": {"type": "integer", "description": "Max messages to return (default 100)"},
+                "offset": {"type": "integer", "description": "Offset into filtered messages. Negative values count from the end (default 0)"},
             },
             "required": ["session_id"],
         },
     },
     {
         "name": "search_messages",
-        "description": "Full-text search across all session messages",
+        "description": "Full-text search across session messages. Pass session_id to scope to a single session.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Text to search for"},
                 "project": {"type": "string", "description": "Filter by project name"},
+                "session_id": {"type": "string", "description": "Scope search to a single session"},
                 "since": {"type": "string", "description": "ISO date, messages after this date"},
                 "limit": {"type": "integer", "description": "Max results (default 20)"},
             },
@@ -768,6 +772,23 @@ def mcp_list_projects(args):
         db.close()
 
 
+PREVIEW_MAX_CHARS = 500
+PREVIEW_MAX_SESSIONS = 50
+
+
+def _last_message_of_type(db, session_id, msg_type):
+    row = db.execute(
+        "SELECT content_text FROM messages WHERE session_id = ? AND type = ? "
+        "AND content_text IS NOT NULL AND content_text != '' "
+        "ORDER BY sequence DESC LIMIT 1",
+        (session_id, msg_type),
+    ).fetchone()
+    if not row:
+        return None
+    text = row["content_text"] or ""
+    return text[:PREVIEW_MAX_CHARS]
+
+
 def mcp_list_sessions(args):
     db = get_db()
     try:
@@ -779,14 +800,23 @@ def mcp_list_sessions(args):
             filtered = [s for s in filtered if s["started_at"] and s["started_at"] >= args["since"]]
         if args.get("until"):
             filtered = [s for s in filtered if s["started_at"] and s["started_at"] <= args["until"]]
+        include_previews = bool(args.get("include_previews"))
         limit = args.get("limit", 20)
+        if include_previews:
+            limit = min(limit, PREVIEW_MAX_SESSIONS)
         filtered = filtered[:limit]
-        result = [{
-            "session_id": s["session_id"], "name": s["name"], "project": s["project"],
-            "model": s["model"], "started_at": s["started_at"],
-            "duration_seconds": s["duration_seconds"], "message_count": s["message_count"],
-            "estimated_cost_usd": s["estimated_cost_usd"],
-        } for s in filtered]
+        result = []
+        for s in filtered:
+            row = {
+                "session_id": s["session_id"], "name": s["name"], "project": s["project"],
+                "model": s["model"], "started_at": s["started_at"],
+                "duration_seconds": s["duration_seconds"], "message_count": s["message_count"],
+                "estimated_cost_usd": s["estimated_cost_usd"],
+            }
+            if include_previews:
+                row["last_user_message"] = _last_message_of_type(db, s["session_id"], "user")
+                row["last_assistant_message"] = _last_message_of_type(db, s["session_id"], "assistant")
+            result.append(row)
         return json.dumps(result, indent=2)
     finally:
         db.close()
@@ -797,15 +827,24 @@ def mcp_get_session_messages(args):
     if not session_id:
         raise ValueError("session_id is required")
     types = args.get("types", ["user", "assistant"])
+    limit = args.get("limit", 100)
+    offset = args.get("offset", 0)
     db = get_db()
     try:
         all_msgs = get_messages(db, session_id)
         filtered = [m for m in all_msgs if m["type"] in types]
+        total = len(filtered)
+        if offset < 0:
+            start = max(0, total + offset)
+        else:
+            start = min(offset, total)
+        end = min(start + limit, total)
+        page = filtered[start:end]
         result = [{
             "uuid": m["uuid"], "type": m["type"], "role": m["role"],
             "content_text": m["content_text"], "tool_name": m["tool_name"],
             "timestamp": m["timestamp"], "sequence": m["sequence"],
-        } for m in filtered]
+        } for m in page]
         return json.dumps(result, indent=2)
     finally:
         db.close()
@@ -816,6 +855,7 @@ def mcp_search_messages(args):
     if not query:
         raise ValueError("query is required")
     project_filter = args.get("project")
+    session_id_filter = args.get("session_id")
     since = args.get("since")
     limit = args.get("limit", 20)
     db = get_db()
@@ -831,6 +871,9 @@ def mcp_search_messages(args):
         if project_filter:
             sql += " AND s.cwd LIKE ?"
             params.append(f"%/{project_filter}")
+        if session_id_filter:
+            sql += " AND m.session_id = ?"
+            params.append(session_id_filter)
         if since:
             sql += " AND m.timestamp >= ?"
             params.append(since)
