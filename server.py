@@ -12,12 +12,6 @@ from urllib.parse import urlparse
 
 DB_PATH = Path.home() / ".claude" / "breadcrumbs.db"
 
-MODEL_PRICING = {
-    "claude-opus-4-6":   {"input": 15.0, "output": 75.0, "cache_write": 18.75, "cache_read": 1.50},
-    "claude-sonnet-4-6": {"input": 3.0,  "output": 15.0, "cache_write": 3.75,  "cache_read": 0.30},
-    "claude-haiku-4-5":  {"input": 0.8,  "output": 4.0,  "cache_write": 1.0,   "cache_read": 0.08},
-}
-
 
 def get_db():
     db = sqlite3.connect(str(DB_PATH), timeout=5)
@@ -29,18 +23,6 @@ def get_db():
         except sqlite3.OperationalError:
             pass
     return db
-
-
-def compute_cost(model, usage):
-    pricing = MODEL_PRICING.get(model)
-    if not pricing or not usage:
-        return None
-    return (
-        usage.get("input_tokens", 0) * pricing["input"]
-        + usage.get("output_tokens", 0) * pricing["output"]
-        + usage.get("cache_creation_input_tokens", 0) * pricing["cache_write"]
-        + usage.get("cache_read_input_tokens", 0) * pricing["cache_read"]
-    ) / 1_000_000
 
 
 def get_sessions(db):
@@ -66,11 +48,6 @@ def get_sessions(db):
             total_output += u.get("output_tokens", 0)
             total_cache_write += u.get("cache_creation_input_tokens", 0)
             total_cache_read += u.get("cache_read_input_tokens", 0)
-        cost = compute_cost(session_model, {
-            "input_tokens": total_input, "output_tokens": total_output,
-            "cache_creation_input_tokens": total_cache_write,
-            "cache_read_input_tokens": total_cache_read,
-        })
         duration = None
         if r["first_msg"] and r["last_msg"]:
             try:
@@ -94,7 +71,6 @@ def get_sessions(db):
             "total_input_tokens": total_input, "total_output_tokens": total_output,
             "total_cache_write_tokens": total_cache_write,
             "total_cache_read_tokens": total_cache_read,
-            "estimated_cost_usd": round(cost, 4) if cost is not None else None,
         })
     return sessions
 
@@ -386,7 +362,6 @@ function renderSidebar(filter) {
       var meta = [];
       if (s.started_at) meta.push(s.started_at.substring(0, 10));
       if (s.message_count) meta.push(s.message_count + ' msgs');
-      if (s.estimated_cost_usd != null) meta.push('$' + s.estimated_cost_usd.toFixed(2));
       html += '<div class="session-item' + active + '" data-id="' + esc(s.session_id) + '" onclick="selectSession(\'' + esc(s.session_id) + '\')">';
       html += '<div class="session-name">' + esc(s.name) + '</div>';
       html += '<div class="session-meta">' + esc(meta.join(' \u00b7 ')) + '</div>';
@@ -427,7 +402,6 @@ async function selectSession(sessionId) {
   if (session.started_at) parts.push('<span class="stat"><span class="stat-label">Started:</span> ' + esc(session.started_at.replace('T', ' ').substring(0, 19)) + '</span>');
   var totalTokens = (session.total_input_tokens || 0) + (session.total_output_tokens || 0);
   if (totalTokens > 0) parts.push('<span class="stat"><span class="stat-label">Tokens:</span> ' + fmtNum(session.total_input_tokens) + ' in / ' + fmtNum(session.total_output_tokens) + ' out</span>');
-  if (session.estimated_cost_usd != null) parts.push('<span class="stat"><span class="stat-label">Est. Cost:</span> $' + session.estimated_cost_usd.toFixed(4) + '</span>');
   var imgBtnClass = imagesExpanded ? ' active' : '';
   parts.push('<span class="btn' + imgBtnClass + '" onclick="toggleImageDefault()">Images</span>');
   bar.innerHTML = parts.join('');
@@ -487,7 +461,7 @@ function renderProjectSummary() {
   var projects = {};
   sessions.forEach(function(s) {
     var p = s.project || 'Other';
-    if (!projects[p]) projects[p] = { sessions: 0, first: null, last: null, toks_in: 0, toks_cached: 0, toks_out: 0, cost: 0 };
+    if (!projects[p]) projects[p] = { sessions: 0, first: null, last: null, toks_in: 0, toks_cached: 0, toks_out: 0 };
     var pr = projects[p];
     pr.sessions++;
     if (s.started_at && (!pr.first || s.started_at < pr.first)) pr.first = s.started_at;
@@ -495,15 +469,14 @@ function renderProjectSummary() {
     pr.toks_in += s.total_input_tokens || 0;
     pr.toks_cached += (s.total_cache_write_tokens || 0) + (s.total_cache_read_tokens || 0);
     pr.toks_out += s.total_output_tokens || 0;
-    pr.cost += s.estimated_cost_usd || 0;
   });
 
   var sorted = Object.keys(projects).sort();
-  var totals = { sessions: 0, toks_in: 0, toks_cached: 0, toks_out: 0, cost: 0 };
+  var totals = { sessions: 0, toks_in: 0, toks_cached: 0, toks_out: 0 };
 
   var html = '<div class="summary-wrap">';
   html += '<table class="summary-table">';
-  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th><th class="num">Est. Cost*</th></tr></thead>';
+  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th></tr></thead>';
   html += '<tbody>';
   sorted.forEach(function(p) {
     var pr = projects[p];
@@ -511,7 +484,6 @@ function renderProjectSummary() {
     totals.toks_in += pr.toks_in;
     totals.toks_cached += pr.toks_cached;
     totals.toks_out += pr.toks_out;
-    totals.cost += pr.cost;
     html += '<tr>';
     html += '<td class="project-name" onclick="document.getElementById(\'projectFilter\').value=\'' + esc(p) + '\';selectedProject=\'' + esc(p) + '\';renderSidebar();document.getElementById(\'statusBar\').style.display=\'none\';document.getElementById(\'messages\').innerHTML=\'<div class=\\\'empty-state\\\'>Select a session to view</div>\';">' + esc(p) + '</td>';
     html += '<td class="num">' + pr.sessions + '</td>';
@@ -520,7 +492,6 @@ function renderProjectSummary() {
     html += '<td class="num">' + fmtNum(pr.toks_in) + '</td>';
     html += '<td class="num">' + fmtNum(pr.toks_cached) + '</td>';
     html += '<td class="num">' + fmtNum(pr.toks_out) + '</td>';
-    html += '<td class="num cost">$' + pr.cost.toFixed(2) + '</td>';
     html += '</tr>';
   });
   html += '</tbody>';
@@ -531,10 +502,8 @@ function renderProjectSummary() {
   html += '<td class="num">' + fmtNum(totals.toks_in) + '</td>';
   html += '<td class="num">' + fmtNum(totals.toks_cached) + '</td>';
   html += '<td class="num">' + fmtNum(totals.toks_out) + '</td>';
-  html += '<td class="num cost">$' + totals.cost.toFixed(2) + '</td>';
   html += '</tr></tfoot>';
   html += '</table>';
-  html += '<div style="margin-top:12px;font-size:11px;color:#484f58;">*Cost estimated from token counts using Claude model pricing as of April 2026. See <a href="https://docs.anthropic.com/en/docs/about-claude/models" target="_blank" style="color:#58a6ff;">docs.anthropic.com</a> for current rates.</div>';
   html += '<div style="margin-top:12px;padding:8px 12px;background:#161b22;border-radius:6px;font-size:12px;color:#8b949e;">';
   html += 'MCP endpoint: <code style="color:#58a6ff;cursor:pointer;user-select:all;">http://localhost:' + location.port + '/mcp</code>';
   html += '</div>';
@@ -680,7 +649,7 @@ MCP_SERVER_INFO = {
 MCP_TOOLS = [
     {
         "name": "list_projects",
-        "description": "List all projects with session counts, date ranges, and total cost",
+        "description": "List all projects with session counts and date ranges",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
@@ -733,7 +702,7 @@ MCP_TOOLS = [
     },
     {
         "name": "get_stats",
-        "description": "Aggregate statistics: sessions, tokens, cost, top tools used",
+        "description": "Aggregate statistics: sessions, tokens, top tools used",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -756,17 +725,14 @@ def mcp_list_projects(args):
             p = s["project"] or "Other"
             if p not in projects:
                 projects[p] = {"project": p, "cwd": s["cwd"], "session_count": 0,
-                               "first_session": None, "last_session": None, "total_cost_usd": 0}
+                               "first_session": None, "last_session": None}
             pr = projects[p]
             pr["session_count"] += 1
             if s["started_at"] and (not pr["first_session"] or s["started_at"] < pr["first_session"]):
                 pr["first_session"] = s["started_at"]
             if s["started_at"] and (not pr["last_session"] or s["started_at"] > pr["last_session"]):
                 pr["last_session"] = s["started_at"]
-            pr["total_cost_usd"] += s["estimated_cost_usd"] or 0
         result = sorted(projects.values(), key=lambda x: x["project"])
-        for r in result:
-            r["total_cost_usd"] = round(r["total_cost_usd"], 4)
         return json.dumps(result, indent=2)
     finally:
         db.close()
@@ -811,7 +777,6 @@ def mcp_list_sessions(args):
                 "session_id": s["session_id"], "name": s["name"], "project": s["project"],
                 "model": s["model"], "started_at": s["started_at"],
                 "duration_seconds": s["duration_seconds"], "message_count": s["message_count"],
-                "estimated_cost_usd": s["estimated_cost_usd"],
             }
             if include_previews:
                 row["last_user_message"] = _last_message_of_type(db, s["session_id"], "user")
@@ -911,7 +876,6 @@ def mcp_get_stats(args):
         total_in = sum(s["total_input_tokens"] or 0 for s in filtered)
         total_out = sum(s["total_output_tokens"] or 0 for s in filtered)
         total_cache = sum((s["total_cache_write_tokens"] or 0) + (s["total_cache_read_tokens"] or 0) for s in filtered)
-        total_cost = sum(s["estimated_cost_usd"] or 0 for s in filtered)
         # Top tools
         session_ids = [s["session_id"] for s in filtered]
         tool_counts = {}
@@ -930,7 +894,7 @@ def mcp_get_stats(args):
         result = {
             "total_sessions": len(filtered), "total_messages": sum(s["message_count"] or 0 for s in filtered),
             "total_input_tokens": total_in, "total_output_tokens": total_out,
-            "total_cache_tokens": total_cache, "total_cost_usd": round(total_cost, 4),
+            "total_cache_tokens": total_cache,
             "top_tools": tool_counts,
             "sessions_by_project": [{"project": k, "count": v} for k, v in sorted(by_project.items())],
         }

@@ -4,9 +4,9 @@ Claude Code already saves every session to disk as JSONL transcript files. You j
 
 Breadcrumbs changes that:
 
-- **Indexes all your history into SQLite** — `install.py` bulk-imports every existing session across all projects. SQL queries, full-text search, cost tracking, cross-project analysis — all instant instead of parsing flat files.
+- **Indexes all your history into SQLite** — `install.py` bulk-imports every existing session across all projects. SQL queries, full-text search, cross-project analysis — all instant instead of parsing flat files.
 - **Keeps it current with hooks** — every new prompt and response is recorded automatically. The database stays in sync with your active sessions, even across multiple Claude Code instances.
-- **Browse it in your browser** — `server.py` serves a local web UI with a session list, conversation viewer, cost tracking, and project filtering.
+- **Browse it in your browser** — `server.py` serves a local web UI with a session list, conversation viewer, and project filtering.
 - **MCP endpoint for agents** — any MCP-capable agent can query your entire development history: "what bugs did we fix last week?", "how did this architecture evolve?", "what patterns repeat across projects?". Project diaries, decision logs, knowledge extraction — all from data you're already generating.
 
 The raw material has been there all along. Breadcrumbs just makes it accessible.
@@ -68,7 +68,7 @@ Features:
 - Session list grouped by project, with search and keyboard navigation
 - Conversation view with user/assistant messages, collapsible tool calls
 - Inline image display with expand/collapse toggle
-- Session cost tracking (input, output, cache tokens)
+- Token usage per session (input, output, cache)
 - Editable session names (click the name in the status bar)
 - Keyboard: `/` to search, Up/Down to navigate sessions, Escape to blur
 
@@ -135,11 +135,11 @@ The viewer includes an MCP server at `http://localhost:8765/mcp` (shown on the l
 
 | Tool | Description |
 |---|---|
-| `list_projects` | All projects with session counts, date ranges, total cost |
+| `list_projects` | All projects with session counts and date ranges |
 | `list_sessions` | Sessions filtered by project, date range; optional `include_previews` |
 | `get_session_messages` | Messages for a session; supports `limit` / `offset` (negative offset = tail) |
 | `search_messages` | Full-text search; optional `session_id` scope |
-| `get_stats` | Aggregate stats: tokens, cost, top tools used |
+| `get_stats` | Aggregate stats: tokens, top tools used |
 
 ## Querying
 
@@ -185,5 +185,4 @@ uninstall.py         — removes hooks, preserves database
 
 *   **Operating Systems:** This tool has currently only been formally tested on Ubuntu 24.04 (Linux). However, because it relies wholly on Python's standard library, it should work on macOS and Windows as well.
 *   **UI Limitations:** The web interface currently lacks session management features. It is not possible to delete sessions, clear history, or rename/favorite sessions directly from the UI (besides editing the current session name).
-*   **Hardcoded Model Pricing:** Token costs in `server.py` are hardcoded for specific model versions (e.g., `claude-opus-4-6`). This requires manual updates whenever Anthropic changes models or pricing, risking inaccurate cost estimates over time.
 *   **Security Concerns:** The `server.py` web server lacks authentication and binds strictly to localhost (`127.0.0.1`). While this prevents access from the wider network, if run on a shared development machine or remote server, any other user logged into that same machine can access your chat history without authenticating.

@@ -48,7 +48,7 @@ check "GET /api/sessions returns sessions" "true" "$([ "$session_count" -gt 0 ] 
 has_fields=$(echo "$result" | python3 -c "
 import sys,json
 s = json.load(sys.stdin)[0]
-fields = ['session_id','name','project','model','started_at','message_count','estimated_cost_usd']
+fields = ['session_id','name','project','model','started_at','message_count']
 print('true' if all(f in s for f in fields) else 'false')
 ")
 check "sessions have expected fields" "true" "$has_fields"
