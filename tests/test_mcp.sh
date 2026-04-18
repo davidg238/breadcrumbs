@@ -139,6 +139,8 @@ total_sessions=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.s
 check "get_stats returns session count" "true" "$([ "$total_sessions" -gt 0 ] && echo true || echo false)"
 has_top_tools=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); stats=json.loads(r['result']['content'][0]['text']); print('true' if 'top_tools' in stats else 'false')")
 check "get_stats includes top_tools" "true" "$has_top_tools"
+has_cache_split=$(echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); stats=json.loads(r['result']['content'][0]['text']); print('true' if 'total_cache_write_tokens' in stats and 'total_cache_read_tokens' in stats else 'false')")
+check "get_stats splits cache tokens into write and read" "true" "$has_cache_split"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

@@ -875,7 +875,8 @@ def mcp_get_stats(args):
             filtered = [s for s in filtered if s["started_at"] and s["started_at"] <= until]
         total_in = sum(s["total_input_tokens"] or 0 for s in filtered)
         total_out = sum(s["total_output_tokens"] or 0 for s in filtered)
-        total_cache = sum((s["total_cache_write_tokens"] or 0) + (s["total_cache_read_tokens"] or 0) for s in filtered)
+        total_cache_write = sum(s["total_cache_write_tokens"] or 0 for s in filtered)
+        total_cache_read = sum(s["total_cache_read_tokens"] or 0 for s in filtered)
         # Top tools
         session_ids = [s["session_id"] for s in filtered]
         tool_counts = {}
@@ -894,7 +895,8 @@ def mcp_get_stats(args):
         result = {
             "total_sessions": len(filtered), "total_messages": sum(s["message_count"] or 0 for s in filtered),
             "total_input_tokens": total_in, "total_output_tokens": total_out,
-            "total_cache_tokens": total_cache,
+            "total_cache_write_tokens": total_cache_write,
+            "total_cache_read_tokens": total_cache_read,
             "top_tools": tool_counts,
             "sessions_by_project": [{"project": k, "count": v} for k, v in sorted(by_project.items())],
         }
