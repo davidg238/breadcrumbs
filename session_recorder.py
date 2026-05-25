@@ -11,12 +11,24 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
 
 DB_PATH = Path.home() / ".claude" / "breadcrumbs.db"
 CLAUDE_DIR = Path.home() / ".claude"
+# Path-referenced screenshots are copied here, organized by year/month, named by
+# content hash so identical images are stored only once.
+IMAGES_DIR = CLAUDE_DIR / "breadcrumbs_images"
+
+# Claude Code records dragged/attached files it does NOT embed as base64 with a
+# text marker like: [Image: source: /home/me/Pictures/Screenshots/shot.png]
+IMAGE_REF_RE = re.compile(r"\[Image: source: (.+?)\]")
+EXT_MEDIA = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -53,7 +65,8 @@ CREATE TABLE IF NOT EXISTS message_images (
     message_uuid TEXT NOT NULL,
     image_index  INTEGER NOT NULL,
     media_type   TEXT,
-    data         BLOB NOT NULL,
+    data         BLOB,
+    file_path    TEXT,
     hash         TEXT,
     UNIQUE(message_uuid, image_index),
     FOREIGN KEY (message_uuid) REFERENCES messages(uuid)
@@ -66,12 +79,47 @@ CREATE INDEX IF NOT EXISTS idx_images_hash ON message_images(hash);
 """
 
 
+def migrate(db):
+    """Bring an existing message_images table up to the current schema.
+
+    Older databases declared `data BLOB NOT NULL` and lacked `file_path`; both are
+    needed so file-backed (path-referenced) images can be stored alongside BLOBs.
+    """
+    cols = {row[1]: row for row in db.execute("PRAGMA table_info(message_images)")}
+    if not cols:
+        return  # table will be created fresh by SCHEMA
+    has_file_path = "file_path" in cols
+    data_not_null = cols.get("data", (0, 0, 0, 0, 0, 0))[3] == 1
+    if has_file_path and not data_not_null:
+        return  # already current
+    db.executescript("""
+        CREATE TABLE message_images_new (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_uuid TEXT NOT NULL,
+            image_index  INTEGER NOT NULL,
+            media_type   TEXT,
+            data         BLOB,
+            file_path    TEXT,
+            hash         TEXT,
+            UNIQUE(message_uuid, image_index),
+            FOREIGN KEY (message_uuid) REFERENCES messages(uuid)
+        );
+        INSERT INTO message_images_new (id, message_uuid, image_index, media_type, data, hash)
+            SELECT id, message_uuid, image_index, media_type, data, hash FROM message_images;
+        DROP TABLE message_images;
+        ALTER TABLE message_images_new RENAME TO message_images;
+        CREATE INDEX IF NOT EXISTS idx_images_hash ON message_images(hash);
+    """)
+    db.commit()
+
+
 def get_db():
     """Open (and initialize if needed) the database."""
     db = sqlite3.connect(str(DB_PATH), timeout=5)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript(SCHEMA)
+    migrate(db)
     return db
 
 
@@ -149,6 +197,80 @@ def extract_images(content):
                 h = hashlib.sha256(raw).hexdigest()
                 yield (img_idx, source.get("media_type", "image/png"), raw, h)
                 img_idx += 1
+
+
+def extract_path_images(content, cwd=""):
+    """Yield filesystem paths referenced as [Image: source: <path>] in text blocks."""
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [b.get("text", "") for b in content
+                 if isinstance(b, dict) and b.get("type") == "text"]
+    else:
+        return
+    for t in texts:
+        for m in IMAGE_REF_RE.finditer(t or ""):
+            raw = m.group(1).strip()
+            p = Path(raw).expanduser()
+            if not p.is_absolute() and cwd:
+                p = Path(cwd) / p
+            yield p
+
+
+def _year_month(ts):
+    """Derive 'YYYY/MM' from an ISO timestamp, falling back to today."""
+    if isinstance(ts, str) and len(ts) >= 7 and ts[4] == "-":
+        return f"{ts[:4]}/{ts[5:7]}"
+    import datetime
+    now = datetime.datetime.now()
+    return f"{now.year:04d}/{now.month:02d}"
+
+
+def image_hash_exists(db, img_hash):
+    """True if an image with this content hash is already stored (BLOB or file)."""
+    return db.execute(
+        "SELECT 1 FROM message_images WHERE hash = ? LIMIT 1", (img_hash,)
+    ).fetchone() is not None
+
+
+def capture_path_image(db, message_uuid, image_index, path, ts):
+    """Copy a path-referenced image into IMAGES_DIR and record it.
+
+    Returns True only when a new image row is inserted. Skips silently when the
+    file is missing/unreadable, is not a recognized image type, or its content is
+    already stored (dedup by hash — covers both prior file copies and BLOBs).
+    """
+    try:
+        if not path.is_file():
+            return False
+        ext = path.suffix.lower()
+        media_type = EXT_MEDIA.get(ext)
+        if media_type is None:
+            return False
+        raw = path.read_bytes()
+    except OSError:
+        return False
+
+    img_hash = hashlib.sha256(raw).hexdigest()
+    if image_hash_exists(db, img_hash):
+        return False  # already captured somewhere — don't duplicate
+
+    rel = f"{_year_month(ts)}/{img_hash}{ext}"
+    dest = IMAGES_DIR / rel
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            dest.write_bytes(raw)
+    except OSError as e:
+        print(f"breadcrumbs: could not write {dest}: {e}", file=sys.stderr)
+        return False
+
+    db.execute("""
+        INSERT OR IGNORE INTO message_images
+            (message_uuid, image_index, media_type, data, file_path, hash)
+        VALUES (?, ?, ?, NULL, ?, ?)
+    """, (message_uuid, image_index, media_type, rel, img_hash))
+    return True
 
 
 def upsert_session(db, session_id, cwd, project=None, model=None,
@@ -313,6 +435,8 @@ def handle_sync(hook_input):
                     pass  # genuine user prompt, keep type="user"
                 elif tool_result is not None:
                     entry_type = "tool_result"
+                elif any(True for _ in extract_images(content)):
+                    pass  # prompt with pasted/dragged image(s), keep type="user"
                 else:
                     entry_type = "system_injection"
 
@@ -331,9 +455,16 @@ def handle_sync(hook_input):
                 usage_json=usage_json_str,
             )
 
-            # Extract images
+            # Extract embedded base64 images
+            img_count = 0
             for img_idx, media_type, raw_bytes, img_hash in extract_images(content):
                 upsert_image(db, uuid, img_idx, media_type, raw_bytes, img_hash)
+                img_count = img_idx + 1
+
+            # Capture path-referenced images that still exist on disk
+            for path in extract_path_images(content, cwd):
+                if capture_path_image(db, uuid, img_count, path, ts):
+                    img_count += 1
 
             sequence += 1
 

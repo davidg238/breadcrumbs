@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 DB_PATH = Path.home() / ".claude" / "breadcrumbs.db"
+IMAGES_DIR = Path.home() / ".claude" / "breadcrumbs_images"
 
 
 def get_db():
@@ -96,8 +97,18 @@ def get_messages(db, session_id):
 
 
 def get_image(db, image_id):
-    row = db.execute("SELECT media_type, data FROM message_images WHERE id = ?", (image_id,)).fetchone()
-    return (row["media_type"], row["data"]) if row else (None, None)
+    row = db.execute(
+        "SELECT media_type, data, file_path FROM message_images WHERE id = ?",
+        (image_id,)).fetchone()
+    if not row:
+        return (None, None)
+    if row["data"] is not None:
+        return (row["media_type"], row["data"])
+    if row["file_path"]:
+        p = IMAGES_DIR / row["file_path"]
+        if p.is_file():
+            return (row["media_type"], p.read_bytes())
+    return (None, None)
 
 
 def update_session_name(db, session_id, name):
@@ -445,6 +456,21 @@ function toggleImageDefault() {
   if (currentSessionId) selectSession(currentSessionId);
 }
 
+function renderImages(msg) {
+  if (!msg.has_images || !msg.image_ids || msg.image_ids.length === 0) return '';
+  var open = imagesExpanded;
+  var h = '<div class="message-images">';
+  h += '<div class="collapsible-header' + (open ? ' open' : '') + '" onclick="toggleCollapse(this)">';
+  h += '<span class="triangle">&#9654;</span> ' + msg.image_ids.length + ' image(s)';
+  h += '</div>';
+  h += '<div class="collapsible-content" style="display:' + (open ? 'block' : 'none') + ';">';
+  msg.image_ids.forEach(function(id) {
+    h += '<img src="/api/images/' + id + '" loading="lazy">';
+  });
+  h += '</div></div>';
+  return h;
+}
+
 function toggleCollapse(el) {
   el.classList.toggle('open');
   var content = el.nextElementSibling;
@@ -561,41 +587,21 @@ function renderMessages(msgs) {
       html += '<span class="triangle">&#9654;</span>';
       html += '<span class="message-label">System</span>';
       html += '</div>';
-      html += '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div></div>';
+      html += '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div>';
+      html += renderImages(msg);
+      html += '</div>';
       html += '</div>';
     } else if (msg.role === 'user') {
       html += '<div class="message user">';
       html += '<div class="message-label">You</div>';
       html += '<div class="message-body">' + esc(msg.content_text || '') + '</div>';
-      if (msg.has_images && msg.image_ids && msg.image_ids.length > 0) {
-        var imgOpen = imagesExpanded;
-        html += '<div class="message-images">';
-        html += '<div class="collapsible-header' + (imgOpen ? ' open' : '') + '" onclick="toggleCollapse(this)">';
-        html += '<span class="triangle">&#9654;</span> ' + msg.image_ids.length + ' image(s)';
-        html += '</div>';
-        html += '<div class="collapsible-content" style="display:' + (imgOpen ? 'block' : 'none') + ';">';
-        msg.image_ids.forEach(function(id) {
-          html += '<img src="/api/images/' + id + '" loading="lazy">';
-        });
-        html += '</div></div>';
-      }
+      html += renderImages(msg);
       html += '</div>';
     } else if (msg.role === 'assistant') {
       html += '<div class="message assistant">';
       html += '<div class="message-label">Claude</div>';
       html += '<div class="message-body md">' + renderMarkdown(msg.content_text || '') + '</div>';
-      if (msg.has_images && msg.image_ids && msg.image_ids.length > 0) {
-        var imgOpen2 = imagesExpanded;
-        html += '<div class="message-images">';
-        html += '<div class="collapsible-header' + (imgOpen2 ? ' open' : '') + '" onclick="toggleCollapse(this)">';
-        html += '<span class="triangle">&#9654;</span> ' + msg.image_ids.length + ' image(s)';
-        html += '</div>';
-        html += '<div class="collapsible-content" style="display:' + (imgOpen2 ? 'block' : 'none') + ';">';
-        msg.image_ids.forEach(function(id) {
-          html += '<img src="/api/images/' + id + '" loading="lazy">';
-        });
-        html += '</div></div>';
-      }
+      html += renderImages(msg);
       html += '</div>';
     }
   });
