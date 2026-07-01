@@ -666,15 +666,22 @@ function renderUsageBanner() {
   });
 }
 
-function renderProjectSummary() {
-  document.getElementById('statusBar').style.display = 'none';
-  var container = document.getElementById('messages');
+var FIVE_H_MS = 5 * 3600 * 1000;
+var WEEK_MS = 7 * 24 * 3600 * 1000;
 
-  // Aggregate by project
+function lastActivity(s) {
+  return s.last_msg || s.updated_at || s.started_at || '';
+}
+
+function computeProjectRows() {
+  var now = Date.now();
   var projects = {};
   sessions.forEach(function(s) {
     var p = s.project || 'Other';
-    if (!projects[p]) projects[p] = { sessions: 0, first: null, last: null, toks_in: 0, toks_cached: 0, toks_out: 0 };
+    if (!projects[p]) projects[p] = {
+      name: p, sessions: 0, first: null, last: null,
+      toks_in: 0, toks_cached: 0, toks_out: 0,
+      sess_5h: 0, sess_week: 0, last_activity: '' };
     var pr = projects[p];
     pr.sessions++;
     if (s.started_at && (!pr.first || s.started_at < pr.first)) pr.first = s.started_at;
@@ -682,46 +689,130 @@ function renderProjectSummary() {
     pr.toks_in += s.total_input_tokens || 0;
     pr.toks_cached += (s.total_cache_write_tokens || 0) + (s.total_cache_read_tokens || 0);
     pr.toks_out += s.total_output_tokens || 0;
+    var la = lastActivity(s);
+    if (la > pr.last_activity) pr.last_activity = la;
+    var age = la ? (now - new Date(la).getTime()) : Infinity;
+    if (age <= FIVE_H_MS) pr.sess_5h++;
+    if (age <= WEEK_MS) pr.sess_week++;
   });
+  return Object.keys(projects).map(function(k) {
+    var pr = projects[k];
+    pr.sess_total = pr.sessions;
+    return pr;
+  });
+}
 
-  var sorted = Object.keys(projects).sort();
-  var totals = { sessions: 0, toks_in: 0, toks_cached: 0, toks_out: 0 };
+function projectBucket(pr) {
+  var age = pr.last_activity ? (Date.now() - new Date(pr.last_activity).getTime()) : Infinity;
+  if (age <= FIVE_H_MS) return 0;
+  if (age <= WEEK_MS) return 1;
+  return 2;
+}
+
+var BUCKET_LABELS = ['Active last 5h', 'Active this week', 'Older'];
+
+var sortState = { column: null, dir: 1 };
+
+var PROJECT_COLUMNS = [
+  { key: 'name',        label: 'Project',    cls: '' },
+  { key: 'first',       label: 'First',      cls: '' },
+  { key: 'last',        label: 'Last',       cls: '' },
+  { key: 'toks_in',     label: 'Tokens In',  cls: 'num' },
+  { key: 'toks_cached', label: 'Cached',     cls: 'num' },
+  { key: 'toks_out',    label: 'Tokens Out', cls: 'num' },
+  { key: 'sess_5h',     label: 'Sess 5h',    cls: 'num' },
+  { key: 'sess_week',   label: 'Sess wk',    cls: 'num' },
+  { key: 'sess_total',  label: 'Sess total', cls: 'num' }
+];
+
+function renderProjectHead() {
+  var h = '<thead><tr>';
+  PROJECT_COLUMNS.forEach(function(c) {
+    var arrow = '';
+    if (sortState.column === c.key) arrow = sortState.dir === 1 ? ' ▲' : ' ▼';
+    h += '<th class="' + c.cls + ' sortable" onclick="sortProjects(\'' + c.key + '\')">' + esc(c.label) + arrow + '</th>';
+  });
+  h += '</tr></thead>';
+  return h;
+}
+
+function makeSortComparator(key, dir) {
+  var numeric = ['toks_in','toks_cached','toks_out','sess_5h','sess_week','sess_total'].indexOf(key) !== -1;
+  return function(a, b) {
+    var av = a[key], bv = b[key];
+    if (numeric) { av = av || 0; bv = bv || 0; return (av - bv) * dir; }
+    av = (av || '').toString().toLowerCase();
+    bv = (bv || '').toString().toLowerCase();
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  };
+}
+
+function renderProjectRow(pr) {
+  var h = '<tr>';
+  h += '<td class="project-name" onclick="document.getElementById(\'projectFilter\').value=\'' + esc(pr.name) + '\';selectedProject=\'' + esc(pr.name) + '\';renderSidebar();document.getElementById(\'statusBar\').style.display=\'none\';document.getElementById(\'messages\').innerHTML=\'<div class=\\\'empty-state\\\'>Select a session to view</div>\';">' + esc(pr.name) + '</td>';
+  h += '<td>' + (pr.first ? pr.first.substring(0, 10) : '') + '</td>';
+  h += '<td>' + (pr.last ? pr.last.substring(0, 10) : '') + '</td>';
+  h += '<td class="num">' + fmtNum(pr.toks_in) + '</td>';
+  h += '<td class="num">' + fmtNum(pr.toks_cached) + '</td>';
+  h += '<td class="num">' + fmtNum(pr.toks_out) + '</td>';
+  h += '<td class="num">' + pr.sess_5h + '</td>';
+  h += '<td class="num">' + pr.sess_week + '</td>';
+  h += '<td class="num">' + pr.sess_total + '</td>';
+  h += '</tr>';
+  return h;
+}
+
+function renderProjectSummary() {
+  document.getElementById('statusBar').style.display = 'none';
+  var container = document.getElementById('messages');
+  var rows = computeProjectRows();
 
   var html = '<div id="usageBanner" class="usage-banner">Loading usage&#8230;</div>';
   html += '<div class="summary-wrap">';
-  html += '<table class="summary-table">';
-  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th></tr></thead>';
+  if (sortState.column) {
+    html += '<div class="sort-reset"><a href="#" onclick="resetProjectSort();return false;">Group by activity</a></div>';
+  }
+  html += '<table class="summary-table" id="projectsTable">';
+  html += renderProjectHead();
   html += '<tbody>';
-  sorted.forEach(function(p) {
-    var pr = projects[p];
-    totals.sessions += pr.sessions;
-    totals.toks_in += pr.toks_in;
-    totals.toks_cached += pr.toks_cached;
-    totals.toks_out += pr.toks_out;
-    html += '<tr>';
-    html += '<td class="project-name" onclick="document.getElementById(\'projectFilter\').value=\'' + esc(p) + '\';selectedProject=\'' + esc(p) + '\';renderSidebar();document.getElementById(\'statusBar\').style.display=\'none\';document.getElementById(\'messages\').innerHTML=\'<div class=\\\'empty-state\\\'>Select a session to view</div>\';">' + esc(p) + '</td>';
-    html += '<td class="num">' + pr.sessions + '</td>';
-    html += '<td>' + (pr.first ? pr.first.substring(0, 10) : '') + '</td>';
-    html += '<td>' + (pr.last ? pr.last.substring(0, 10) : '') + '</td>';
-    html += '<td class="num">' + fmtNum(pr.toks_in) + '</td>';
-    html += '<td class="num">' + fmtNum(pr.toks_cached) + '</td>';
-    html += '<td class="num">' + fmtNum(pr.toks_out) + '</td>';
-    html += '</tr>';
-  });
+
+  var totals = { toks_in: 0, toks_cached: 0, toks_out: 0, sess_5h: 0, sess_week: 0, sess_total: 0 };
+  function accumulate(pr) {
+    totals.toks_in += pr.toks_in; totals.toks_cached += pr.toks_cached; totals.toks_out += pr.toks_out;
+    totals.sess_5h += pr.sess_5h; totals.sess_week += pr.sess_week; totals.sess_total += pr.sess_total;
+  }
+
+  if (sortState.column) {
+    var flat = rows.slice().sort(makeSortComparator(sortState.column, sortState.dir));
+    flat.forEach(function(pr) { accumulate(pr); html += renderProjectRow(pr); });
+  } else {
+    // default: bucket, then last_activity desc within bucket
+    var buckets = [[], [], []];
+    rows.forEach(function(pr) { buckets[projectBucket(pr)].push(pr); });
+    buckets.forEach(function(group, bi) {
+      if (!group.length) return;
+      group.sort(function(a, b) { return a.last_activity < b.last_activity ? 1 : -1; });
+      html += '<tr class="bucket-header"><td colspan="9">' + esc(BUCKET_LABELS[bi]) + '</td></tr>';
+      group.forEach(function(pr) { accumulate(pr); html += renderProjectRow(pr); });
+    });
+  }
+
   html += '</tbody>';
   html += '<tfoot><tr style="border-top:2px solid #30363d;font-weight:600;">';
-  html += '<td>Total</td>';
-  html += '<td class="num">' + totals.sessions + '</td>';
-  html += '<td></td><td></td>';
+  html += '<td>Total</td><td></td><td></td>';
   html += '<td class="num">' + fmtNum(totals.toks_in) + '</td>';
   html += '<td class="num">' + fmtNum(totals.toks_cached) + '</td>';
   html += '<td class="num">' + fmtNum(totals.toks_out) + '</td>';
+  html += '<td class="num">' + totals.sess_5h + '</td>';
+  html += '<td class="num">' + totals.sess_week + '</td>';
+  html += '<td class="num">' + totals.sess_total + '</td>';
   html += '</tr></tfoot>';
   html += '</table>';
   html += '<div style="margin-top:12px;padding:8px 12px;background:#161b22;border-radius:6px;font-size:12px;color:#8b949e;">';
   html += 'MCP endpoint: <code style="color:#58a6ff;cursor:pointer;user-select:all;">http://localhost:' + location.port + '/mcp</code>';
-  html += '</div>';
-  html += '</div>';
+  html += '</div></div>';
 
   container.innerHTML = html;
   renderUsageBanner();

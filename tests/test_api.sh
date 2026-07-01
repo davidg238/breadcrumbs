@@ -37,6 +37,9 @@ check "GET / returns HTML" "DOCTYPE" "$result"
 result=$(curl -s "$URL/")
 check "page includes usage banner renderer" "renderUsageBanner" "$result"
 
+result=$(curl -s "$URL/")
+check "page includes grouped session columns" "Sess total" "$result"
+
 echo
 
 # --- Sessions API ---
