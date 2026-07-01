@@ -4,14 +4,138 @@
 import argparse
 import json
 import sqlite3
+import subprocess
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
 DB_PATH = Path.home() / ".claude" / "breadcrumbs.db"
 IMAGES_DIR = Path.home() / ".claude" / "breadcrumbs_images"
+
+USAGE_CONFIG_PATH = Path.home() / ".claude" / "breadcrumbs_usage.json"
+
+USAGE_CONFIG_DEFAULTS = {
+    "session_budget": 0,
+    "weekly_budget": 0,
+    "model_weights": {"default": 1.0},
+    "billable": "output_plus_input",
+}
+
+WINDOW_LENGTHS = {"session": 5 * 3600, "weekly": 7 * 24 * 3600}
+
+
+def load_usage_config(path=USAGE_CONFIG_PATH):
+    config = {
+        "session_budget": USAGE_CONFIG_DEFAULTS["session_budget"],
+        "weekly_budget": USAGE_CONFIG_DEFAULTS["weekly_budget"],
+        "model_weights": dict(USAGE_CONFIG_DEFAULTS["model_weights"]),
+        "billable": USAGE_CONFIG_DEFAULTS["billable"],
+    }
+    try:
+        with open(path) as f:
+            overrides = json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return config
+    if not isinstance(overrides, dict):
+        return config
+    for key in ("session_budget", "weekly_budget", "billable"):
+        if key in overrides:
+            config[key] = overrides[key]
+    if isinstance(overrides.get("model_weights"), dict):
+        config["model_weights"].update(overrides["model_weights"])
+    return config
+
+
+def _parse_ts(ts):
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def billable_tokens(usage, billable):
+    inp = usage.get("input_tokens", 0)
+    out = usage.get("output_tokens", 0)
+    cw = usage.get("cache_creation_input_tokens", 0)
+    cr = usage.get("cache_read_input_tokens", 0)
+    if billable == "output_only":
+        return out
+    if billable == "all":
+        return inp + out + cw + cr
+    return inp + out  # "output_plus_input" default
+
+
+def model_weight(model, weights):
+    return weights.get(model, weights.get("default", 1.0))
+
+
+def get_usage(db, now=None, config=None):
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if config is None:
+        config = load_usage_config()
+    weights = config.get("model_weights", {"default": 1.0})
+    billable = config.get("billable", "output_plus_input")
+    budgets = {"session": config.get("session_budget", 0),
+               "weekly": config.get("weekly_budget", 0)}
+    windows = {}
+    for name, length in WINDOW_LENGTHS.items():
+        cutoff = now - timedelta(seconds=length)
+        cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        rows = db.execute(
+            "SELECT usage_json, model, timestamp FROM messages "
+            "WHERE usage_json IS NOT NULL AND timestamp >= ? ORDER BY timestamp",
+            (cutoff_iso,)).fetchall()
+        totals = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+        by_model = {}
+        weighted = 0.0
+        window_start = None
+        for r in rows:
+            ts = _parse_ts(r["timestamp"])
+            if ts is None or ts < cutoff:
+                continue
+            try:
+                u = json.loads(r["usage_json"])
+            except (ValueError, TypeError):
+                continue
+            if window_start is None or r["timestamp"] < window_start:
+                window_start = r["timestamp"]
+            model = r["model"] or "unknown"
+            inp = u.get("input_tokens", 0)
+            out = u.get("output_tokens", 0)
+            cw = u.get("cache_creation_input_tokens", 0)
+            cr = u.get("cache_read_input_tokens", 0)
+            totals["input"] += inp
+            totals["output"] += out
+            totals["cache_write"] += cw
+            totals["cache_read"] += cr
+            m = by_model.setdefault(
+                model, {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0})
+            m["input"] += inp
+            m["output"] += out
+            m["cache_write"] += cw
+            m["cache_read"] += cr
+            weighted += model_weight(model, weights) * billable_tokens(u, billable)
+        budget = budgets[name]
+        percent = round(weighted / budget * 100, 1) if budget and budget > 0 else None
+        reset_at = None
+        if window_start is not None:
+            ws = _parse_ts(window_start)
+            if ws is not None:
+                reset_at = (ws + timedelta(seconds=length)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        windows[name] = {
+            "length_seconds": length,
+            "window_start": window_start,
+            "reset_at": reset_at,
+            "tokens": totals,
+            "by_model": by_model,
+            "weighted_tokens": round(weighted, 2),
+            "budget": budget,
+            "percent": percent,
+        }
+    return {"generated_at": now.strftime("%Y-%m-%dT%H:%M:%S.000Z"), "windows": windows}
 
 
 def get_db():
@@ -67,7 +191,7 @@ def get_sessions(db):
             "session_id": r["session_id"], "name": name,
             "project": project_display, "cwd": cwd,
             "model": session_model, "started_at": r["started_at"],
-            "updated_at": r["updated_at"], "git_branch": r["git_branch"],
+            "updated_at": r["updated_at"], "last_msg": r["last_msg"], "git_branch": r["git_branch"],
             "duration_seconds": duration, "message_count": r["message_count"],
             "total_input_tokens": total_input, "total_output_tokens": total_output,
             "total_cache_write_tokens": total_cache_write,
@@ -217,6 +341,25 @@ a:hover { text-decoration: underline; }
 .md table { border-collapse: collapse; margin: 8px 0; }
 .md th, .md td { border: 1px solid #30363d; padding: 6px 12px; text-align: left; }
 .md th { background: #161b22; font-weight: 600; }
+
+/* Usage banner */
+.usage-banner { display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+.usage-card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:12px 16px; min-width:220px; }
+.usage-card-title { font-size:12px; color:#8b949e; text-transform:uppercase; letter-spacing:.04em; }
+.usage-card-total { font-size:20px; font-weight:600; margin-top:2px; }
+.usage-card-breakdown { font-size:12px; color:#8b949e; margin-top:2px; }
+.usage-card-reset { font-size:12px; color:#58a6ff; margin-top:6px; }
+.usage-bar { height:6px; background:#30363d; border-radius:3px; margin-top:8px; overflow:hidden; }
+.usage-bar-fill { height:100%; background:#3fb950; }
+.usage-card-pct { font-size:12px; color:#8b949e; margin-top:4px; }
+.usage-unavailable, .usage-banner .usage-unavailable { color:#8b949e; font-size:12px; }
+
+/* Project table buckets + sort */
+.bucket-header td { background:#0d1117; color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding-top:10px; }
+.summary-table th.sortable { cursor:pointer; user-select:none; }
+.summary-table th.sortable:hover { color:#58a6ff; }
+.sort-reset { margin-bottom:8px; font-size:12px; }
+.sort-reset a { color:#58a6ff; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -479,15 +622,67 @@ function toggleCollapse(el) {
   }
 }
 
-function renderProjectSummary() {
-  document.getElementById('statusBar').style.display = 'none';
-  var container = document.getElementById('messages');
+function fmtCountdown(resetIso) {
+  if (!resetIso) return '';
+  var ms = new Date(resetIso).getTime() - Date.now();
+  if (ms <= 0) return 'resets now';
+  var mins = Math.floor(ms / 60000);
+  var h = Math.floor(mins / 60);
+  var m = mins % 60;
+  return 'resets in ' + (h > 0 ? h + 'h ' : '') + m + 'm';
+}
 
-  // Aggregate by project
+function usageCard(title, w) {
+  var t = w.tokens || {};
+  var total = (t.input || 0) + (t.output || 0);
+  var html = '<div class="usage-card">';
+  html += '<div class="usage-card-title">' + esc(title) + '</div>';
+  html += '<div class="usage-card-total">' + fmtNum(total) + ' tokens</div>';
+  html += '<div class="usage-card-breakdown">' + fmtNum(t.input || 0) + ' in / '
+        + fmtNum(t.output || 0) + ' out / ' + fmtNum((t.cache_write || 0) + (t.cache_read || 0)) + ' cache</div>';
+  if (w.reset_at) {
+    html += '<div class="usage-card-reset" title="Approximate: rolling window from first message in range">'
+          + esc(fmtCountdown(w.reset_at)) + '</div>';
+  }
+  if (w.percent !== null && w.percent !== undefined) {
+    var pct = Math.min(100, w.percent);
+    html += '<div class="usage-bar"><div class="usage-bar-fill" style="width:' + pct + '%"></div></div>';
+    html += '<div class="usage-card-pct" title="Estimate calibrated locally via breadcrumbs_usage.json — not from Anthropic">&#8776;'
+          + w.percent + '% (est.)</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderUsageBanner() {
+  var el = document.getElementById('usageBanner');
+  if (!el) return;
+  fetch('/api/usage').then(function(r) { return r.json(); }).then(function(u) {
+    var w = (u && u.windows) || {};
+    if (!w.session && !w.weekly) { el.style.display = 'none'; return; }
+    el.innerHTML = usageCard('Current session (5h)', w.session || {tokens:{}})
+                 + usageCard('All models (7d)', w.weekly || {tokens:{}});
+  }).catch(function() {
+    el.innerHTML = '<div class="usage-unavailable">usage unavailable</div>';
+  });
+}
+
+var FIVE_H_MS = 5 * 3600 * 1000;
+var WEEK_MS = 7 * 24 * 3600 * 1000;
+
+function lastActivity(s) {
+  return s.last_msg || s.updated_at || s.started_at || '';
+}
+
+function computeProjectRows() {
+  var now = Date.now();
   var projects = {};
   sessions.forEach(function(s) {
     var p = s.project || 'Other';
-    if (!projects[p]) projects[p] = { sessions: 0, first: null, last: null, toks_in: 0, toks_cached: 0, toks_out: 0 };
+    if (!projects[p]) projects[p] = {
+      name: p, sessions: 0, first: null, last: null,
+      toks_in: 0, toks_cached: 0, toks_out: 0,
+      sess_5h: 0, sess_week: 0, last_activity: '' };
     var pr = projects[p];
     pr.sessions++;
     if (s.started_at && (!pr.first || s.started_at < pr.first)) pr.first = s.started_at;
@@ -495,47 +690,149 @@ function renderProjectSummary() {
     pr.toks_in += s.total_input_tokens || 0;
     pr.toks_cached += (s.total_cache_write_tokens || 0) + (s.total_cache_read_tokens || 0);
     pr.toks_out += s.total_output_tokens || 0;
+    var la = lastActivity(s);
+    if (la > pr.last_activity) pr.last_activity = la;
+    var age = la ? (now - new Date(la).getTime()) : Infinity;
+    if (age <= FIVE_H_MS) pr.sess_5h++;
+    if (age <= WEEK_MS) pr.sess_week++;
   });
+  return Object.keys(projects).map(function(k) {
+    var pr = projects[k];
+    pr.sess_total = pr.sessions;
+    return pr;
+  });
+}
 
-  var sorted = Object.keys(projects).sort();
-  var totals = { sessions: 0, toks_in: 0, toks_cached: 0, toks_out: 0 };
+function projectBucket(pr) {
+  var age = pr.last_activity ? (Date.now() - new Date(pr.last_activity).getTime()) : Infinity;
+  if (age <= FIVE_H_MS) return 0;
+  if (age <= WEEK_MS) return 1;
+  return 2;
+}
 
-  var html = '<div class="summary-wrap">';
-  html += '<table class="summary-table">';
-  html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th></tr></thead>';
+var BUCKET_LABELS = ['Active last 5h', 'Active this week', 'Older'];
+
+var sortState = { column: null, dir: 1 };
+
+var PROJECT_COLUMNS = [
+  { key: 'name',        label: 'Project',    cls: '' },
+  { key: 'first',       label: 'First',      cls: '' },
+  { key: 'last',        label: 'Last',       cls: '' },
+  { key: 'toks_in',     label: 'Tokens In',  cls: 'num' },
+  { key: 'toks_cached', label: 'Cached',     cls: 'num' },
+  { key: 'toks_out',    label: 'Tokens Out', cls: 'num' },
+  { key: 'sess_5h',     label: 'Sess 5h',    cls: 'num' },
+  { key: 'sess_week',   label: 'Sess wk',    cls: 'num' },
+  { key: 'sess_total',  label: 'Sess total', cls: 'num' }
+];
+
+function renderProjectHead() {
+  var h = '<thead><tr>';
+  PROJECT_COLUMNS.forEach(function(c) {
+    var arrow = '';
+    if (sortState.column === c.key) arrow = sortState.dir === 1 ? ' ▲' : ' ▼';
+    h += '<th class="' + c.cls + ' sortable" onclick="sortProjects(\'' + c.key + '\')">' + esc(c.label) + arrow + '</th>';
+  });
+  h += '</tr></thead>';
+  return h;
+}
+
+function makeSortComparator(key, dir) {
+  var numeric = ['toks_in','toks_cached','toks_out','sess_5h','sess_week','sess_total'].indexOf(key) !== -1;
+  return function(a, b) {
+    var av = a[key], bv = b[key];
+    if (numeric) { av = av || 0; bv = bv || 0; return (av - bv) * dir; }
+    av = (av || '').toString().toLowerCase();
+    bv = (bv || '').toString().toLowerCase();
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  };
+}
+
+function renderProjectRow(pr) {
+  var h = '<tr>';
+  h += '<td class="project-name" onclick="document.getElementById(\'projectFilter\').value=\'' + esc(pr.name) + '\';selectedProject=\'' + esc(pr.name) + '\';renderSidebar();document.getElementById(\'statusBar\').style.display=\'none\';document.getElementById(\'messages\').innerHTML=\'<div class=\\\'empty-state\\\'>Select a session to view</div>\';">' + esc(pr.name) + '</td>';
+  h += '<td>' + (pr.first ? pr.first.substring(0, 10) : '') + '</td>';
+  h += '<td>' + (pr.last ? pr.last.substring(0, 10) : '') + '</td>';
+  h += '<td class="num">' + fmtNum(pr.toks_in) + '</td>';
+  h += '<td class="num">' + fmtNum(pr.toks_cached) + '</td>';
+  h += '<td class="num">' + fmtNum(pr.toks_out) + '</td>';
+  h += '<td class="num">' + pr.sess_5h + '</td>';
+  h += '<td class="num">' + pr.sess_week + '</td>';
+  h += '<td class="num">' + pr.sess_total + '</td>';
+  h += '</tr>';
+  return h;
+}
+
+function sortProjects(key) {
+  if (sortState.column === key) {
+    sortState.dir = -sortState.dir;
+  } else {
+    sortState.column = key;
+    sortState.dir = 1;
+  }
+  renderProjectSummary();
+}
+
+function resetProjectSort() {
+  sortState.column = null;
+  sortState.dir = 1;
+  renderProjectSummary();
+}
+
+function renderProjectSummary() {
+  document.getElementById('statusBar').style.display = 'none';
+  var container = document.getElementById('messages');
+  var rows = computeProjectRows();
+
+  var html = '<div id="usageBanner" class="usage-banner">Loading usage&#8230;</div>';
+  html += '<div class="summary-wrap">';
+  if (sortState.column) {
+    html += '<div class="sort-reset"><a href="#" onclick="resetProjectSort();return false;">Group by activity</a></div>';
+  }
+  html += '<table class="summary-table" id="projectsTable">';
+  html += renderProjectHead();
   html += '<tbody>';
-  sorted.forEach(function(p) {
-    var pr = projects[p];
-    totals.sessions += pr.sessions;
-    totals.toks_in += pr.toks_in;
-    totals.toks_cached += pr.toks_cached;
-    totals.toks_out += pr.toks_out;
-    html += '<tr>';
-    html += '<td class="project-name" onclick="document.getElementById(\'projectFilter\').value=\'' + esc(p) + '\';selectedProject=\'' + esc(p) + '\';renderSidebar();document.getElementById(\'statusBar\').style.display=\'none\';document.getElementById(\'messages\').innerHTML=\'<div class=\\\'empty-state\\\'>Select a session to view</div>\';">' + esc(p) + '</td>';
-    html += '<td class="num">' + pr.sessions + '</td>';
-    html += '<td>' + (pr.first ? pr.first.substring(0, 10) : '') + '</td>';
-    html += '<td>' + (pr.last ? pr.last.substring(0, 10) : '') + '</td>';
-    html += '<td class="num">' + fmtNum(pr.toks_in) + '</td>';
-    html += '<td class="num">' + fmtNum(pr.toks_cached) + '</td>';
-    html += '<td class="num">' + fmtNum(pr.toks_out) + '</td>';
-    html += '</tr>';
-  });
+
+  var totals = { toks_in: 0, toks_cached: 0, toks_out: 0, sess_5h: 0, sess_week: 0, sess_total: 0 };
+  function accumulate(pr) {
+    totals.toks_in += pr.toks_in; totals.toks_cached += pr.toks_cached; totals.toks_out += pr.toks_out;
+    totals.sess_5h += pr.sess_5h; totals.sess_week += pr.sess_week; totals.sess_total += pr.sess_total;
+  }
+
+  if (sortState.column) {
+    var flat = rows.slice().sort(makeSortComparator(sortState.column, sortState.dir));
+    flat.forEach(function(pr) { accumulate(pr); html += renderProjectRow(pr); });
+  } else {
+    // default: bucket, then last_activity desc within bucket
+    var buckets = [[], [], []];
+    rows.forEach(function(pr) { buckets[projectBucket(pr)].push(pr); });
+    buckets.forEach(function(group, bi) {
+      if (!group.length) return;
+      group.sort(function(a, b) { return a.last_activity < b.last_activity ? 1 : -1; });
+      html += '<tr class="bucket-header"><td colspan="9">' + esc(BUCKET_LABELS[bi]) + '</td></tr>';
+      group.forEach(function(pr) { accumulate(pr); html += renderProjectRow(pr); });
+    });
+  }
+
   html += '</tbody>';
   html += '<tfoot><tr style="border-top:2px solid #30363d;font-weight:600;">';
-  html += '<td>Total</td>';
-  html += '<td class="num">' + totals.sessions + '</td>';
-  html += '<td></td><td></td>';
+  html += '<td>Total</td><td></td><td></td>';
   html += '<td class="num">' + fmtNum(totals.toks_in) + '</td>';
   html += '<td class="num">' + fmtNum(totals.toks_cached) + '</td>';
   html += '<td class="num">' + fmtNum(totals.toks_out) + '</td>';
+  html += '<td class="num">' + totals.sess_5h + '</td>';
+  html += '<td class="num">' + totals.sess_week + '</td>';
+  html += '<td class="num">' + totals.sess_total + '</td>';
   html += '</tr></tfoot>';
   html += '</table>';
   html += '<div style="margin-top:12px;padding:8px 12px;background:#161b22;border-radius:6px;font-size:12px;color:#8b949e;">';
   html += 'MCP endpoint: <code style="color:#58a6ff;cursor:pointer;user-select:all;">http://localhost:' + location.port + '/mcp</code>';
-  html += '</div>';
-  html += '</div>';
+  html += '</div></div>';
 
   container.innerHTML = html;
+  renderUsageBanner();
 }
 
 function renderMessages(msgs) {
@@ -992,6 +1289,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(get_sessions(db))
             finally:
                 db.close()
+        elif path == "/api/usage":
+            db = get_db()
+            try:
+                self.send_json(get_usage(db))
+            finally:
+                db.close()
         elif path.startswith("/api/sessions/") and path.endswith("/messages"):
             session_id = path[len("/api/sessions/"):-len("/messages")]
             db = get_db()
@@ -1070,10 +1373,36 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error_json(404, "Not found")
 
 
+def tailscale_ip():
+    """Return this node's Tailscale IPv4, or None if unavailable."""
+    try:
+        out = subprocess.run(
+            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    return lines[0] if lines else None
+
+
+def resolve_bind_host(host, use_tailscale, ip_lookup=tailscale_ip):
+    if not use_tailscale:
+        return host
+    ip = ip_lookup()
+    if not ip:
+        raise ValueError(
+            "Could not determine Tailscale IP. Is 'tailscale' installed and connected?")
+    return ip
+
+
 def main():
     parser = argparse.ArgumentParser(description="Breadcrumbs Viewer — browse Claude Code session history")
     parser.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
     parser.add_argument("--open", action="store_true", help="open browser on start")
+    parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    parser.add_argument("--tailscale", action="store_true",
+                        help="bind to this node's Tailscale IP so the viewer is reachable over your tailnet")
     args = parser.parse_args()
 
     if not DB_PATH.exists():
@@ -1081,10 +1410,16 @@ def main():
         print("Run 'python3 install.py' first to set up breadcrumbs recording.")
         raise SystemExit(1)
 
+    try:
+        bind_host = resolve_bind_host(args.host, args.tailscale)
+    except ValueError as e:
+        print(e)
+        raise SystemExit(1)
+
     port = args.port
     while True:
         try:
-            server = HTTPServer(("127.0.0.1", port), Handler)
+            server = HTTPServer((bind_host, port), Handler)
             break
         except OSError:
             port += 1
@@ -1092,8 +1427,11 @@ def main():
                 print("Could not find an open port")
                 raise SystemExit(1)
 
-    url = f"http://localhost:{port}"
+    display_host = "localhost" if bind_host in ("127.0.0.1", "0.0.0.0") else bind_host
+    url = f"http://{display_host}:{port}"
     print(f"Breadcrumbs viewer: {url}")
+    if bind_host not in ("127.0.0.1", "localhost"):
+        print(f"Reachable on this bind address to other devices: {bind_host}")
     print("Press Ctrl+C to stop")
 
     if args.open:

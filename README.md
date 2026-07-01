@@ -62,15 +62,58 @@ Browse sessions in your browser:
 python3 server.py                    # start viewer
 python3 server.py --open             # also open browser
 python3 server.py --port 9000        # custom port
+python3 server.py --tailscale        # bind to this node's Tailscale IP
 ```
+
+By default the viewer binds to `127.0.0.1` (this machine only). To reach it from
+other devices on your [Tailscale](https://tailscale.com) tailnet, bind to this
+node's Tailscale IP:
+
+```bash
+python3 server.py --tailscale
+```
+
+This binds to the Tailscale interface only — not your regular LAN. Note the viewer
+exposes your full session history to any device on the tailnet.
 
 Features:
 - Session list grouped by project, with search and keyboard navigation
 - Conversation view with user/assistant messages, collapsible tool calls
 - Inline image display with expand/collapse toggle
 - Token usage per session (input, output, cache)
+- Device-local [usage banner](#usage-banner) with rolling-window token totals
+- Projects table with **Sess 5h / Sess wk / Sess total** columns, grouped by
+  activity (Active last 5h / Active this week / Older). Click any column header
+  to sort the whole table; a "Group by activity" link restores the grouped view.
 - Editable session names (click the name in the status bar)
 - Keyboard: `/` to search, Up/Down to navigate sessions, Escape to blur
+
+## Usage banner
+
+The project summary shows a device-local usage banner with two rolling windows —
+**Current session** (5 hours) and **All models** (7 days) — computed from the token
+counts already stored in `~/.claude/breadcrumbs.db`. Totals and the approximate reset
+countdown are always exact for this machine.
+
+To also show an approximate `/usage`-style percentage, create
+`~/.claude/breadcrumbs_usage.json`:
+
+```json
+{
+  "session_budget": 100000,
+  "weekly_budget": 2000000,
+  "model_weights": { "default": 1.0, "claude-opus-4-8": 5.0 },
+  "billable": "output_plus_input"
+}
+```
+
+- `session_budget` / `weekly_budget` — weighted-token budgets. `0` (default) hides the percentage.
+- `model_weights` — per-model multiplier (`default` applies to unlisted models).
+- `billable` — `output_only` | `output_plus_input` (default) | `all`.
+
+The percentage is a **local estimate** — Anthropic's real plan limits are undocumented.
+Calibrate by nudging the budgets until the percentage matches what Claude Code's
+`/usage` shows, then it will track.
 
 ## Run as a Service (Linux)
 

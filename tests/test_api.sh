@@ -34,6 +34,12 @@ check "GET / returns 200" "200" "$result"
 result=$(curl -s "$URL/" | head -1 || true)
 check "GET / returns HTML" "DOCTYPE" "$result"
 
+result=$(curl -s "$URL/")
+check "page includes usage banner renderer" "renderUsageBanner" "$result"
+
+result=$(curl -s "$URL/")
+check "page includes grouped session columns" "Sess total" "$result"
+
 echo
 
 # --- Sessions API ---
@@ -48,13 +54,31 @@ check "GET /api/sessions returns sessions" "true" "$([ "$session_count" -gt 0 ] 
 has_fields=$(echo "$result" | python3 -c "
 import sys,json
 s = json.load(sys.stdin)[0]
-fields = ['session_id','name','project','model','started_at','message_count']
+fields = ['session_id','name','project','model','started_at','message_count','last_msg']
 print('true' if all(f in s for f in fields) else 'false')
 ")
 check "sessions have expected fields" "true" "$has_fields"
 
 # Get a session_id for further tests
 session_id=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['session_id'])")
+
+echo
+
+# --- Usage API ---
+
+echo "Usage API:"
+
+result=$(curl -s -o /dev/null -w "%{http_code}" "$URL/api/usage")
+check "GET /api/usage returns 200" "200" "$result"
+
+result=$(curl -s "$URL/api/usage")
+has_windows=$(echo "$result" | python3 -c "
+import sys,json
+u = json.load(sys.stdin)
+w = u.get('windows', {})
+print('true' if 'session' in w and 'weekly' in w and 'reset_at' in w['session'] else 'false')
+")
+check "usage has session and weekly windows" "true" "$has_windows"
 
 echo
 
