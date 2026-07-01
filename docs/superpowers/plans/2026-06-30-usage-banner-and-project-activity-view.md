@@ -17,6 +17,7 @@
 - The `/usage` percentage is an explicitly-labeled **estimate**; it is hidden entirely when no budget is configured.
 - Rolling windows: **session = 5 hours (18000s)**, **weekly = 7 days (604800s)**.
 - Follow existing patterns in `server.py`: path dispatch in `do_GET`, `self.send_json(...)`, `get_db()` returning `sqlite3.Row` rows.
+- **Binding stays localhost by default.** The viewer exposes all session history, so non-localhost binding is opt-in. `--tailscale` binds to *this node's Tailscale IP only* (not `0.0.0.0`), keeping it off the regular LAN and reachable only by authenticated tailnet devices.
 
 ---
 
@@ -29,9 +30,11 @@
   - Surface `last_msg` in `get_sessions`.
   - Add `/api/usage` branch in `do_GET`.
   - Inline UI JS: add `renderUsageBanner()`, rewrite `renderProjectSummary()`, add bucketing + sort helpers.
+  - Add `import subprocess`; add `tailscale_ip()` / `resolve_bind_host()`; add `--host` / `--tailscale` args and use the resolved bind host in `main()`.
 - `tests/test_usage.py` (create) — Python `unittest` for `load_usage_config` and `get_usage`.
+- `tests/test_bind.py` (create) — Python `unittest` for `resolve_bind_host`.
 - `tests/test_api.sh` (modify) — smoke checks for `/api/usage` and `last_msg`.
-- `README.md` (modify) — document banner, columns/sorting, and the optional config + calibration.
+- `README.md` (modify) — document banner, columns/sorting, the optional config + calibration, and the `--tailscale` flag.
 
 ---
 
@@ -952,8 +955,173 @@ git commit -m "docs: document usage banner, config, and project table changes"
 
 ---
 
+### Task 9: Bind to a Tailscale address
+
+**Files:**
+- Modify: `server.py` (add `import subprocess`; add `tailscale_ip` + `resolve_bind_host` helpers; extend `main()` args and bind logic)
+- Test: `tests/test_bind.py` (create)
+
+**Interfaces:**
+- Produces:
+  - `tailscale_ip() -> str | None` — this node's Tailscale IPv4 via `tailscale ip -4`, or `None`.
+  - `resolve_bind_host(host, use_tailscale, ip_lookup=tailscale_ip) -> str` — returns `host` normally; when `use_tailscale`, returns the looked-up Tailscale IP or raises `ValueError`.
+- CLI: `--host` (default `127.0.0.1`) and `--tailscale` flag.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_bind.py`:
+
+```python
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import server  # noqa: E402
+
+
+class ResolveBindHostTests(unittest.TestCase):
+    def test_default_returns_host_unchanged(self):
+        self.assertEqual(server.resolve_bind_host("127.0.0.1", False), "127.0.0.1")
+
+    def test_explicit_host_passthrough(self):
+        self.assertEqual(server.resolve_bind_host("0.0.0.0", False), "0.0.0.0")
+
+    def test_tailscale_uses_lookup(self):
+        got = server.resolve_bind_host("127.0.0.1", True, ip_lookup=lambda: "100.101.102.103")
+        self.assertEqual(got, "100.101.102.103")
+
+    def test_tailscale_lookup_failure_raises(self):
+        with self.assertRaises(ValueError):
+            server.resolve_bind_host("127.0.0.1", True, ip_lookup=lambda: None)
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m unittest tests.test_bind -v`
+Expected: FAIL — `AttributeError: module 'server' has no attribute 'resolve_bind_host'`.
+
+- [ ] **Step 3: Implement the helpers**
+
+In `server.py`, add `import subprocess` to the imports block. Add these helpers (near `main`, above it):
+
+```python
+def tailscale_ip():
+    """Return this node's Tailscale IPv4, or None if unavailable."""
+    try:
+        out = subprocess.run(
+            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    return lines[0] if lines else None
+
+
+def resolve_bind_host(host, use_tailscale, ip_lookup=tailscale_ip):
+    if not use_tailscale:
+        return host
+    ip = ip_lookup()
+    if not ip:
+        raise ValueError(
+            "Could not determine Tailscale IP. Is 'tailscale' installed and connected?")
+    return ip
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m unittest tests.test_bind -v`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Wire the flags into `main()`**
+
+Update `main()`: add the args, resolve the bind host, use it for `HTTPServer` and the printed URL.
+
+```python
+    parser.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
+    parser.add_argument("--open", action="store_true", help="open browser on start")
+    parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    parser.add_argument("--tailscale", action="store_true",
+                        help="bind to this node's Tailscale IP so the viewer is reachable over your tailnet")
+    args = parser.parse_args()
+
+    if not DB_PATH.exists():
+        print(f"Database not found: {DB_PATH}")
+        print("Run 'python3 install.py' first to set up breadcrumbs recording.")
+        raise SystemExit(1)
+
+    try:
+        bind_host = resolve_bind_host(args.host, args.tailscale)
+    except ValueError as e:
+        print(e)
+        raise SystemExit(1)
+
+    port = args.port
+    while True:
+        try:
+            server = HTTPServer((bind_host, port), Handler)
+            break
+        except OSError:
+            port += 1
+            if port > args.port + 100:
+                print("Could not find an open port")
+                raise SystemExit(1)
+
+    display_host = "localhost" if bind_host in ("127.0.0.1", "0.0.0.0") else bind_host
+    url = f"http://{display_host}:{port}"
+    print(f"Breadcrumbs viewer: {url}")
+    if bind_host not in ("127.0.0.1", "localhost"):
+        print(f"Reachable on this bind address to other devices: {bind_host}")
+    print("Press Ctrl+C to stop")
+
+    if args.open:
+        webbrowser.open(url)
+```
+
+- [ ] **Step 6: Manual verification**
+
+Run:
+```bash
+python3 server.py --tailscale --port 8765
+```
+Expected: prints `Breadcrumbs viewer: http://100.x.y.z:8765`. From another device on the tailnet, open that URL and confirm the viewer loads. Then run `python3 server.py` with no flags and confirm it still prints `http://localhost:8765` and binds locally only.
+
+If `tailscale` is not connected, `--tailscale` should print the "Could not determine Tailscale IP…" message and exit non-zero.
+
+- [ ] **Step 7: Document the flag**
+
+Add to the `README.md` Viewer section:
+
+````markdown
+By default the viewer binds to `127.0.0.1` (this machine only). To reach it from
+other devices on your [Tailscale](https://tailscale.com) tailnet, bind to this
+node's Tailscale IP:
+
+```bash
+python3 server.py --tailscale
+```
+
+This binds to the Tailscale interface only — not your regular LAN. Note the viewer
+exposes your full session history to any device on the tailnet.
+````
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add server.py tests/test_bind.py README.md
+git commit -m "feat(server): add --tailscale to bind viewer to the tailnet"
+```
+
+---
+
 ## Self-Review Notes
 
-- **Spec coverage:** banner windows + native totals + reset (Tasks 3–5); calibratable % + config (Tasks 2, 5, 8); `last_msg` surfacing (Task 1); activity buckets + grouped session columns + moved total (Task 6); click-to-sort Option 1 + reset (Task 7); tests (Tasks 2–4 automated, 5–7 manual per repo convention); docs (Task 8). All spec sections map to a task.
+- **Spec coverage:** banner windows + native totals + reset (Tasks 3–5); calibratable % + config (Tasks 2, 5, 8); `last_msg` surfacing (Task 1); activity buckets + grouped session columns + moved total (Task 6); click-to-sort Option 1 + reset (Task 7); tests (Tasks 2–4, 9 automated, 5–7 manual per repo convention); docs (Task 8). Tailscale binding (Task 9) is an added scope item beyond the original spec. All spec sections map to a task.
 - **Type consistency:** `sortState`, `makeSortComparator`, `computeProjectRows`, `renderProjectHead`, `renderProjectRow`, `renderUsageBanner`, `get_usage` names are used identically across tasks. The `windows` JSON shape in Task 3 matches the fields read in Task 5.
 - **Testing reality:** the repo has no JS test harness; UI tasks use precise manual checklists plus cheap HTML-marker smoke checks, consistent with existing `tests/*.sh`. Python logic (`get_usage`, config) gets real `unittest` coverage with an injectable `now` for determinism.
