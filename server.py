@@ -5,13 +5,46 @@ import argparse
 import json
 import sqlite3
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
 DB_PATH = Path.home() / ".claude" / "breadcrumbs.db"
 IMAGES_DIR = Path.home() / ".claude" / "breadcrumbs_images"
+
+USAGE_CONFIG_PATH = Path.home() / ".claude" / "breadcrumbs_usage.json"
+
+USAGE_CONFIG_DEFAULTS = {
+    "session_budget": 0,
+    "weekly_budget": 0,
+    "model_weights": {"default": 1.0},
+    "billable": "output_plus_input",
+}
+
+WINDOW_LENGTHS = {"session": 5 * 3600, "weekly": 7 * 24 * 3600}
+
+
+def load_usage_config(path=USAGE_CONFIG_PATH):
+    config = {
+        "session_budget": USAGE_CONFIG_DEFAULTS["session_budget"],
+        "weekly_budget": USAGE_CONFIG_DEFAULTS["weekly_budget"],
+        "model_weights": dict(USAGE_CONFIG_DEFAULTS["model_weights"]),
+        "billable": USAGE_CONFIG_DEFAULTS["billable"],
+    }
+    try:
+        with open(path) as f:
+            overrides = json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return config
+    if not isinstance(overrides, dict):
+        return config
+    for key in ("session_budget", "weekly_budget", "billable"):
+        if key in overrides:
+            config[key] = overrides[key]
+    if isinstance(overrides.get("model_weights"), dict):
+        config["model_weights"].update(overrides["model_weights"])
+    return config
 
 
 def get_db():
