@@ -1115,6 +1115,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(get_sessions(db))
             finally:
                 db.close()
+        elif path == "/api/usage":
+            db = get_db()
+            try:
+                self.send_json(get_usage(db))
+            finally:
+                db.close()
         elif path.startswith("/api/sessions/") and path.endswith("/messages"):
             session_id = path[len("/api/sessions/"):-len("/messages")]
             db = get_db()

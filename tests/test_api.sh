@@ -58,6 +58,24 @@ session_id=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.s
 
 echo
 
+# --- Usage API ---
+
+echo "Usage API:"
+
+result=$(curl -s -o /dev/null -w "%{http_code}" "$URL/api/usage")
+check "GET /api/usage returns 200" "200" "$result"
+
+result=$(curl -s "$URL/api/usage")
+has_windows=$(echo "$result" | python3 -c "
+import sys,json
+u = json.load(sys.stdin)
+w = u.get('windows', {})
+print('true' if 'session' in w and 'weekly' in w and 'reset_at' in w['session'] else 'false')
+")
+check "usage has session and weekly windows" "true" "$has_windows"
+
+echo
+
 # --- Messages API ---
 
 echo "Messages API:"
