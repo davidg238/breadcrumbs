@@ -31,7 +31,7 @@ echo "HTML:"
 result=$(curl -s -o /dev/null -w "%{http_code}" "$URL/")
 check "GET / returns 200" "200" "$result"
 
-result=$(curl -s "$URL/" | head -1)
+result=$(curl -s "$URL/" | head -1 || true)
 check "GET / returns HTML" "DOCTYPE" "$result"
 
 echo
