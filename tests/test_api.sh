@@ -34,6 +34,9 @@ check "GET / returns 200" "200" "$result"
 result=$(curl -s "$URL/" | head -1 || true)
 check "GET / returns HTML" "DOCTYPE" "$result"
 
+result=$(curl -s "$URL/")
+check "page includes usage banner renderer" "renderUsageBanner" "$result"
+
 echo
 
 # --- Sessions API ---

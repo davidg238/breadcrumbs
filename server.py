@@ -341,6 +341,25 @@ a:hover { text-decoration: underline; }
 .md th, .md td { border: 1px solid #30363d; padding: 6px 12px; text-align: left; }
 .md th { background: #161b22; font-weight: 600; }
 
+/* Usage banner */
+.usage-banner { display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+.usage-card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:12px 16px; min-width:220px; }
+.usage-card-title { font-size:12px; color:#8b949e; text-transform:uppercase; letter-spacing:.04em; }
+.usage-card-total { font-size:20px; font-weight:600; margin-top:2px; }
+.usage-card-breakdown { font-size:12px; color:#8b949e; margin-top:2px; }
+.usage-card-reset { font-size:12px; color:#58a6ff; margin-top:6px; }
+.usage-bar { height:6px; background:#30363d; border-radius:3px; margin-top:8px; overflow:hidden; }
+.usage-bar-fill { height:100%; background:#3fb950; }
+.usage-card-pct { font-size:12px; color:#8b949e; margin-top:4px; }
+.usage-unavailable, .usage-banner .usage-unavailable { color:#8b949e; font-size:12px; }
+
+/* Project table buckets + sort */
+.bucket-header td { background:#0d1117; color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding-top:10px; }
+.summary-table th.sortable { cursor:pointer; user-select:none; }
+.summary-table th.sortable:hover { color:#58a6ff; }
+.sort-reset { margin-bottom:8px; font-size:12px; }
+.sort-reset a { color:#58a6ff; }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -602,6 +621,51 @@ function toggleCollapse(el) {
   }
 }
 
+function fmtCountdown(resetIso) {
+  if (!resetIso) return '';
+  var ms = new Date(resetIso).getTime() - Date.now();
+  if (ms <= 0) return 'resets now';
+  var mins = Math.floor(ms / 60000);
+  var h = Math.floor(mins / 60);
+  var m = mins % 60;
+  return 'resets in ' + (h > 0 ? h + 'h ' : '') + m + 'm';
+}
+
+function usageCard(title, w) {
+  var t = w.tokens || {};
+  var total = (t.input || 0) + (t.output || 0);
+  var html = '<div class="usage-card">';
+  html += '<div class="usage-card-title">' + esc(title) + '</div>';
+  html += '<div class="usage-card-total">' + fmtNum(total) + ' tokens</div>';
+  html += '<div class="usage-card-breakdown">' + fmtNum(t.input || 0) + ' in / '
+        + fmtNum(t.output || 0) + ' out / ' + fmtNum((t.cache_write || 0) + (t.cache_read || 0)) + ' cache</div>';
+  if (w.reset_at) {
+    html += '<div class="usage-card-reset" title="Approximate: rolling window from first message in range">'
+          + esc(fmtCountdown(w.reset_at)) + '</div>';
+  }
+  if (w.percent !== null && w.percent !== undefined) {
+    var pct = Math.min(100, w.percent);
+    html += '<div class="usage-bar"><div class="usage-bar-fill" style="width:' + pct + '%"></div></div>';
+    html += '<div class="usage-card-pct" title="Estimate calibrated locally via breadcrumbs_usage.json — not from Anthropic">&#8776;'
+          + w.percent + '% (est.)</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderUsageBanner() {
+  var el = document.getElementById('usageBanner');
+  if (!el) return;
+  fetch('/api/usage').then(function(r) { return r.json(); }).then(function(u) {
+    var w = (u && u.windows) || {};
+    if (!w.session && !w.weekly) { el.style.display = 'none'; return; }
+    el.innerHTML = usageCard('Current session (5h)', w.session || {tokens:{}})
+                 + usageCard('All models (7d)', w.weekly || {tokens:{}});
+  }).catch(function() {
+    el.innerHTML = '<div class="usage-unavailable">usage unavailable</div>';
+  });
+}
+
 function renderProjectSummary() {
   document.getElementById('statusBar').style.display = 'none';
   var container = document.getElementById('messages');
@@ -623,7 +687,8 @@ function renderProjectSummary() {
   var sorted = Object.keys(projects).sort();
   var totals = { sessions: 0, toks_in: 0, toks_cached: 0, toks_out: 0 };
 
-  var html = '<div class="summary-wrap">';
+  var html = '<div id="usageBanner" class="usage-banner">Loading usage&#8230;</div>';
+  html += '<div class="summary-wrap">';
   html += '<table class="summary-table">';
   html += '<thead><tr><th>Project</th><th>Sessions</th><th>First</th><th>Last</th><th class="num">Tokens In</th><th class="num">Cached</th><th class="num">Tokens Out</th></tr></thead>';
   html += '<tbody>';
@@ -659,6 +724,7 @@ function renderProjectSummary() {
   html += '</div>';
 
   container.innerHTML = html;
+  renderUsageBanner();
 }
 
 function renderMessages(msgs) {
