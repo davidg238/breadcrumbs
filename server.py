@@ -764,6 +764,22 @@ function renderProjectRow(pr) {
   return h;
 }
 
+function sortProjects(key) {
+  if (sortState.column === key) {
+    sortState.dir = -sortState.dir;
+  } else {
+    sortState.column = key;
+    sortState.dir = 1;
+  }
+  renderProjectSummary();
+}
+
+function resetProjectSort() {
+  sortState.column = null;
+  sortState.dir = 1;
+  renderProjectSummary();
+}
+
 function renderProjectSummary() {
   document.getElementById('statusBar').style.display = 'none';
   var container = document.getElementById('messages');
