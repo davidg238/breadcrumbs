@@ -622,6 +622,10 @@ async function selectSession(sessionId) {
   } catch(e) {
     msgDiv.innerHTML = '<div class="empty-state">Failed to load messages</div>';
   }
+
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    setMobileScreen('messages', session.name || 'Session');
+  }
 }
 
 function startEditName() {
@@ -888,6 +892,56 @@ function renderProjectSummary() {
   renderUsageBanner();
 }
 
+function renderMobileProjects() {
+  var rows = computeProjectRows();
+  var html = '<div id="usageBanner" class="usage-banner">Loading usage&#8230;</div>';
+  html += '<div class="mproj-list">';
+  rows.forEach(function(pr) {
+    var meta = (pr.last ? 'Last active ' + pr.last.substring(0, 10) : 'No activity')
+      + ' · ' + pr.sess_total + ' session' + (pr.sess_total === 1 ? '' : 's');
+    html += '<div class="mproj-card" data-project="' + esc(pr.name) + '">'
+      + '<div class="mproj-name">' + esc(pr.name) + '</div>'
+      + '<div class="mproj-meta">' + meta + '</div>'
+      + '</div>';
+  });
+  html += '</div>';
+  document.getElementById('mobileProjects').innerHTML = html;
+  renderUsageBanner();
+}
+
+var mobileScreen = 'projects';
+
+function setMobileScreen(name, title) {
+  mobileScreen = name;
+  document.body.classList.remove('m-projects', 'm-sessions', 'm-messages');
+  document.body.classList.add('m-' + name);
+  var back = document.getElementById('mobileBack');
+  var titleEl = document.getElementById('mobileTitle');
+  back.style.visibility = (name === 'projects') ? 'hidden' : 'visible';
+  if (title != null) titleEl.textContent = title;
+  else if (name === 'projects') titleEl.textContent = 'Breadcrumbs';
+  else if (name === 'sessions') titleEl.textContent = selectedProject || 'Sessions';
+  window.scrollTo(0, 0);
+}
+
+function openProjectMobile(name) {
+  selectedProject = name;
+  var pf = document.getElementById('projectFilter');
+  if (pf) pf.value = name;
+  renderSidebar();
+  setMobileScreen('sessions');
+}
+
+function mobileBack() {
+  if (mobileScreen === 'messages') setMobileScreen('sessions');
+  else if (mobileScreen === 'sessions') setMobileScreen('projects');
+}
+
+document.getElementById('mobileProjects').addEventListener('click', function(e) {
+  var card = e.target.closest('.mproj-card');
+  if (card) openProjectMobile(card.dataset.project);
+});
+
 function renderMessages(msgs) {
   var container = document.getElementById('messages');
   var html = '';
@@ -988,7 +1042,14 @@ document.getElementById('search').addEventListener('input', function(e) {
 });
 
 // Boot
-fetchSessions().then(function() { renderProjectSummary(); });
+fetchSessions().then(function() {
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    renderMobileProjects();
+    setMobileScreen('projects');
+  } else {
+    renderProjectSummary();
+  }
+});
 </script>
 </body>
 </html>
