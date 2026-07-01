@@ -67,7 +67,7 @@ def get_sessions(db):
             "session_id": r["session_id"], "name": name,
             "project": project_display, "cwd": cwd,
             "model": session_model, "started_at": r["started_at"],
-            "updated_at": r["updated_at"], "git_branch": r["git_branch"],
+            "updated_at": r["updated_at"], "last_msg": r["last_msg"], "git_branch": r["git_branch"],
             "duration_seconds": duration, "message_count": r["message_count"],
             "total_input_tokens": total_input, "total_output_tokens": total_output,
             "total_cache_write_tokens": total_cache_write,
