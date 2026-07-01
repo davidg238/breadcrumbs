@@ -366,9 +366,62 @@ a:hover { text-decoration: underline; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+/* Mobile drill-down — hidden on desktop */
+.mobile-topbar { display: none; }
+.mobile-projects { display: none; }
+
+@media (max-width: 768px) {
+  body { display: block; height: auto; overflow: auto; }
+
+  .mobile-topbar {
+    display: flex; align-items: center; gap: 8px;
+    position: sticky; top: 0; z-index: 10;
+    background: #161b22; border-bottom: 1px solid #30363d;
+    padding: 8px 12px; min-height: 48px;
+  }
+  .mobile-topbar .m-back {
+    background: none; border: none; color: #58a6ff;
+    font-size: 22px; line-height: 1; padding: 6px 10px;
+    min-width: 44px; min-height: 44px; cursor: pointer;
+  }
+  .mobile-topbar .m-title {
+    font-size: 15px; font-weight: 600; color: #e6edf3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Layout: full width, page scrolls, only one screen visible */
+  .sidebar { width: 100%; min-width: 0; border-right: none; height: auto; }
+  .sidebar-header .project-filter { display: none; }
+  .session-list { flex: none; overflow: visible; }
+  .main { min-width: 0; height: auto; }
+  .messages { flex: none; overflow: visible; padding: 12px; }
+
+  .mobile-projects, .sidebar, .main { display: none; }
+  body.m-projects .mobile-projects { display: block; }
+  body.m-sessions .sidebar { display: flex; }
+  body.m-messages .main { display: flex; }
+
+  .mobile-projects { padding: 12px; }
+  .mproj-list { display: flex; flex-direction: column; gap: 8px; }
+  .mproj-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 14px 16px; min-height: 44px; cursor: pointer;
+  }
+  .mproj-card:active { background: #1c2128; }
+  .mproj-name { font-size: 15px; font-weight: 600; color: #58a6ff; }
+  .mproj-meta { font-size: 12px; color: #8b949e; margin-top: 4px; }
+
+  .session-item { padding: 14px 16px; min-height: 44px; }
+}
 </style>
 </head>
 <body>
+<div class="mobile-topbar" id="mobileTopbar">
+  <button class="m-back" id="mobileBack" onclick="mobileBack()">&#8249;</button>
+  <span class="m-title" id="mobileTitle">Breadcrumbs</span>
+</div>
+<div class="mobile-projects" id="mobileProjects"></div>
 <div class="sidebar">
   <div class="sidebar-header">
     <h1>Breadcrumbs</h1>
