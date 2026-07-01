@@ -62,7 +62,19 @@ Browse sessions in your browser:
 python3 server.py                    # start viewer
 python3 server.py --open             # also open browser
 python3 server.py --port 9000        # custom port
+python3 server.py --tailscale        # bind to this node's Tailscale IP
 ```
+
+By default the viewer binds to `127.0.0.1` (this machine only). To reach it from
+other devices on your [Tailscale](https://tailscale.com) tailnet, bind to this
+node's Tailscale IP:
+
+```bash
+python3 server.py --tailscale
+```
+
+This binds to the Tailscale interface only — not your regular LAN. Note the viewer
+exposes your full session history to any device on the tailnet.
 
 Features:
 - Session list grouped by project, with search and keyboard navigation

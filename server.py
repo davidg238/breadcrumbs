@@ -4,6 +4,7 @@
 import argparse
 import json
 import sqlite3
+import subprocess
 import webbrowser
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -1372,10 +1373,36 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error_json(404, "Not found")
 
 
+def tailscale_ip():
+    """Return this node's Tailscale IPv4, or None if unavailable."""
+    try:
+        out = subprocess.run(
+            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    return lines[0] if lines else None
+
+
+def resolve_bind_host(host, use_tailscale, ip_lookup=tailscale_ip):
+    if not use_tailscale:
+        return host
+    ip = ip_lookup()
+    if not ip:
+        raise ValueError(
+            "Could not determine Tailscale IP. Is 'tailscale' installed and connected?")
+    return ip
+
+
 def main():
     parser = argparse.ArgumentParser(description="Breadcrumbs Viewer — browse Claude Code session history")
     parser.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
     parser.add_argument("--open", action="store_true", help="open browser on start")
+    parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    parser.add_argument("--tailscale", action="store_true",
+                        help="bind to this node's Tailscale IP so the viewer is reachable over your tailnet")
     args = parser.parse_args()
 
     if not DB_PATH.exists():
@@ -1383,10 +1410,16 @@ def main():
         print("Run 'python3 install.py' first to set up breadcrumbs recording.")
         raise SystemExit(1)
 
+    try:
+        bind_host = resolve_bind_host(args.host, args.tailscale)
+    except ValueError as e:
+        print(e)
+        raise SystemExit(1)
+
     port = args.port
     while True:
         try:
-            server = HTTPServer(("127.0.0.1", port), Handler)
+            server = HTTPServer((bind_host, port), Handler)
             break
         except OSError:
             port += 1
@@ -1394,8 +1427,11 @@ def main():
                 print("Could not find an open port")
                 raise SystemExit(1)
 
-    url = f"http://localhost:{port}"
+    display_host = "localhost" if bind_host in ("127.0.0.1", "0.0.0.0") else bind_host
+    url = f"http://{display_host}:{port}"
     print(f"Breadcrumbs viewer: {url}")
+    if bind_host not in ("127.0.0.1", "localhost"):
+        print(f"Reachable on this bind address to other devices: {bind_host}")
     print("Press Ctrl+C to stop")
 
     if args.open:
