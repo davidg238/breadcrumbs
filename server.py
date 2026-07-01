@@ -47,6 +47,96 @@ def load_usage_config(path=USAGE_CONFIG_PATH):
     return config
 
 
+def _parse_ts(ts):
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def billable_tokens(usage, billable):
+    inp = usage.get("input_tokens", 0)
+    out = usage.get("output_tokens", 0)
+    cw = usage.get("cache_creation_input_tokens", 0)
+    cr = usage.get("cache_read_input_tokens", 0)
+    if billable == "output_only":
+        return out
+    if billable == "all":
+        return inp + out + cw + cr
+    return inp + out  # "output_plus_input" default
+
+
+def model_weight(model, weights):
+    return weights.get(model, weights.get("default", 1.0))
+
+
+def get_usage(db, now=None, config=None):
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if config is None:
+        config = load_usage_config()
+    weights = config.get("model_weights", {"default": 1.0})
+    billable = config.get("billable", "output_plus_input")
+    budgets = {"session": config.get("session_budget", 0),
+               "weekly": config.get("weekly_budget", 0)}
+    windows = {}
+    for name, length in WINDOW_LENGTHS.items():
+        cutoff = now - timedelta(seconds=length)
+        cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        rows = db.execute(
+            "SELECT usage_json, model, timestamp FROM messages "
+            "WHERE usage_json IS NOT NULL AND timestamp >= ? ORDER BY timestamp",
+            (cutoff_iso,)).fetchall()
+        totals = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+        by_model = {}
+        weighted = 0.0
+        window_start = None
+        for r in rows:
+            ts = _parse_ts(r["timestamp"])
+            if ts is None or ts < cutoff:
+                continue
+            try:
+                u = json.loads(r["usage_json"])
+            except (ValueError, TypeError):
+                continue
+            if window_start is None or r["timestamp"] < window_start:
+                window_start = r["timestamp"]
+            model = r["model"] or "unknown"
+            inp = u.get("input_tokens", 0)
+            out = u.get("output_tokens", 0)
+            cw = u.get("cache_creation_input_tokens", 0)
+            cr = u.get("cache_read_input_tokens", 0)
+            totals["input"] += inp
+            totals["output"] += out
+            totals["cache_write"] += cw
+            totals["cache_read"] += cr
+            m = by_model.setdefault(
+                model, {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0})
+            m["input"] += inp
+            m["output"] += out
+            m["cache_write"] += cw
+            m["cache_read"] += cr
+            weighted += model_weight(model, weights) * billable_tokens(u, billable)
+        budget = budgets[name]
+        percent = round(weighted / budget * 100, 1) if budget and budget > 0 else None
+        reset_at = None
+        if window_start is not None:
+            ws = _parse_ts(window_start)
+            if ws is not None:
+                reset_at = (ws + timedelta(seconds=length)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        windows[name] = {
+            "length_seconds": length,
+            "window_start": window_start,
+            "reset_at": reset_at,
+            "tokens": totals,
+            "by_model": by_model,
+            "weighted_tokens": round(weighted, 2),
+            "budget": budget,
+            "percent": percent,
+        }
+    return {"generated_at": now.strftime("%Y-%m-%dT%H:%M:%S.000Z"), "windows": windows}
+
+
 def get_db():
     db = sqlite3.connect(str(DB_PATH), timeout=5)
     db.row_factory = sqlite3.Row
