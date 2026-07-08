@@ -257,3 +257,33 @@ The viewer shows a full-screen "Indexing X of N sessions" progress bar that fill
 as records arrive. This is *progressive delivery of one response*, not live data
 streaming — the "no real-time streaming" non-goal above (refresh to see new data)
 still holds.
+
+## Addendum 2026-07-08 — user-message classification & injection rendering
+
+**Problem.** Autonomous sessions rendered almost none of the user's typed input as
+"You", while pasting giant `<task-notification>` blocks *as* user input. Root cause
+was a classifier keyed on content **shape**: every string-form `user` transcript
+entry was kept as "You" (so `<task-notification>`, `<command-name>` expansions and
+`<local-command-stdout>` showed as the user), and every list-form entry was demoted
+to `system_injection` (hiding genuine prompts delivered as a list of text blocks).
+
+**Decision — classify by intent markers, not shape.** `classify_user_entry`
+(`session_recorder.py`) demotes a `role=user` entry only when: it carries a
+`tool_result`; the transcript entry has `isMeta: true` (skill loads, caveats); or its
+text opens with a known Claude Code injection tag (`task-notification`,
+`command-name/message/args`, `local-command-stdout/stderr/caveat`, `system-reminder`,
+`user-prompt-submit-hook`, `bash-input/stdout/stderr`). Everything else stays `user`,
+whether string or text-block list. A user who genuinely types an unknown tag like
+`<div>` is still "You" — only the known-tag allowlist demotes. Verified against the
+four `nsl-tuvm` transcripts: genuine typed prompts are always `isMeta:false` and
+never open with an injection tag (19/19).
+
+**Decision — label + preview for injected rows.** The viewer's `system_injection`
+branch now derives a label and one-line preview via `injectionMeta` (`server.py`):
+`Task Notification · <status> · <summary>`, `Command`, `Command Output`, `Skill Load`,
+`System Reminder`. Rows stay collapsed by default, so a delegated run is scannable
+instead of a wall of always-expanded XML.
+
+**Backfill.** Applied to existing data by re-running the idempotent `handle_sync`
+over every session whose transcript still exists on disk (164 of 510; the other 346
+have no transcript and were left untouched).
