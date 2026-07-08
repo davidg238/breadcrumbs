@@ -151,33 +151,46 @@ def get_db():
 
 
 def get_sessions(db):
-    rows = db.execute("""
-        SELECT s.*, COUNT(m.uuid) as message_count,
-            MIN(m.timestamp) as first_msg, MAX(m.timestamp) as last_msg
-        FROM sessions s
-        LEFT JOIN messages m ON m.session_id = s.session_id
-        GROUP BY s.session_id ORDER BY s.started_at DESC
-    """).fetchall()
+    rows = db.execute("SELECT * FROM sessions ORDER BY started_at DESC").fetchall()
+
+    # Aggregate message counts, timestamps and token usage for every session in
+    # a single scan over the messages table. The previous approach ran a GROUP BY
+    # join plus one usage query per session (an N+1), which made the first page
+    # load take ~10s with 500+ sessions; one pass keeps it a few seconds.
+    agg_by_session = {}
+    for m in db.execute("SELECT session_id, timestamp, usage_json, model FROM messages"):
+        a = agg_by_session.get(m["session_id"])
+        if a is None:
+            a = {"count": 0, "first": None, "last": None,
+                 "input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "model": None}
+            agg_by_session[m["session_id"]] = a
+        a["count"] += 1
+        ts = m["timestamp"]
+        if ts:
+            if a["first"] is None or ts < a["first"]:
+                a["first"] = ts
+            if a["last"] is None or ts > a["last"]:
+                a["last"] = ts
+        if m["usage_json"]:
+            if a["model"] is None and m["model"]:
+                a["model"] = m["model"]
+            u = json.loads(m["usage_json"])
+            a["input"] += u.get("input_tokens", 0)
+            a["output"] += u.get("output_tokens", 0)
+            a["cache_write"] += u.get("cache_creation_input_tokens", 0)
+            a["cache_read"] += u.get("cache_read_input_tokens", 0)
+
+    empty = {"count": 0, "first": None, "last": None,
+             "input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "model": None}
     sessions = []
     for r in rows:
-        usage_rows = db.execute(
-            "SELECT usage_json, model FROM messages WHERE session_id = ? AND usage_json IS NOT NULL",
-            (r["session_id"],)).fetchall()
-        total_input = total_output = total_cache_write = total_cache_read = 0
-        session_model = r["model"]
-        for ur in usage_rows:
-            if not session_model and ur["model"]:
-                session_model = ur["model"]
-            u = json.loads(ur["usage_json"])
-            total_input += u.get("input_tokens", 0)
-            total_output += u.get("output_tokens", 0)
-            total_cache_write += u.get("cache_creation_input_tokens", 0)
-            total_cache_read += u.get("cache_read_input_tokens", 0)
+        a = agg_by_session.get(r["session_id"], empty)
+        session_model = r["model"] or a["model"]
         duration = None
-        if r["first_msg"] and r["last_msg"]:
+        if a["first"] and a["last"]:
             try:
-                t1 = datetime.fromisoformat(r["first_msg"].replace("Z", "+00:00"))
-                t2 = datetime.fromisoformat(r["last_msg"].replace("Z", "+00:00"))
+                t1 = datetime.fromisoformat(a["first"].replace("Z", "+00:00"))
+                t2 = datetime.fromisoformat(a["last"].replace("Z", "+00:00"))
                 duration = int((t2 - t1).total_seconds())
             except (ValueError, TypeError):
                 pass
@@ -191,11 +204,11 @@ def get_sessions(db):
             "session_id": r["session_id"], "name": name,
             "project": project_display, "cwd": cwd,
             "model": session_model, "started_at": r["started_at"],
-            "updated_at": r["updated_at"], "last_msg": r["last_msg"], "git_branch": r["git_branch"],
-            "duration_seconds": duration, "message_count": r["message_count"],
-            "total_input_tokens": total_input, "total_output_tokens": total_output,
-            "total_cache_write_tokens": total_cache_write,
-            "total_cache_read_tokens": total_cache_read,
+            "updated_at": r["updated_at"], "last_msg": a["last"], "git_branch": r["git_branch"],
+            "duration_seconds": duration, "message_count": a["count"],
+            "total_input_tokens": a["input"], "total_output_tokens": a["output"],
+            "total_cache_write_tokens": a["cache_write"],
+            "total_cache_read_tokens": a["cache_read"],
         })
     return sessions
 
@@ -351,6 +364,12 @@ a:hover { text-decoration: underline; }
 .usage-card-reset { font-size:12px; color:#58a6ff; margin-top:6px; }
 .usage-bar { height:6px; background:#30363d; border-radius:3px; margin-top:8px; overflow:hidden; }
 .usage-bar-fill { height:100%; background:#3fb950; }
+.loading-overlay { position:fixed; inset:0; z-index:1000; display:none; align-items:center; justify-content:center; background:#0d1117; }
+.loading-overlay.show { display:flex; }
+.loading-card { width:280px; max-width:80vw; text-align:center; color:#c9d1d9; font-size:14px; }
+.loading-label { margin-bottom:10px; }
+.loading-bar { height:8px; background:#30363d; border-radius:4px; overflow:hidden; }
+.loading-bar-fill { height:100%; width:0; background:#3fb950; transition:width .12s ease; }
 .usage-card-pct { font-size:12px; color:#8b949e; margin-top:4px; }
 .usage-unavailable, .usage-banner .usage-unavailable { color:#8b949e; font-size:12px; }
 
@@ -417,6 +436,12 @@ a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-card">
+    <div class="loading-label" id="loadingLabel">Loading sessions&#8230;</div>
+    <div class="loading-bar"><div class="loading-bar-fill" id="loadingBarFill"></div></div>
+  </div>
+</div>
 <div class="mobile-topbar" id="mobileTopbar">
   <button class="m-back" id="mobileBack" onclick="mobileBack()">&#8249;</button>
   <span class="m-title" id="mobileTitle">Breadcrumbs</span>
@@ -505,14 +530,59 @@ function renderMarkdown(text) {
   return s;
 }
 
-async function fetchSessions() {
+function showLoading() {
+  document.getElementById('loadingOverlay').classList.add('show');
+  updateLoadingProgress(0, 0);
+}
+function updateLoadingProgress(done, total) {
+  var pct = total ? Math.round(done / total * 100) : 0;
+  document.getElementById('loadingBarFill').style.width = pct + '%';
+  document.getElementById('loadingLabel').textContent =
+    total ? ('Indexing ' + done + ' of ' + total + ' sessions') : 'Loading sessions…';
+}
+function hideLoading() {
+  document.getElementById('loadingOverlay').classList.remove('show');
+}
+
+async function fetchSessions(showProgress) {
+  if (showProgress) showLoading();
   try {
     var res = await fetch('/api/sessions');
-    sessions = await res.json();
+    sessions = [];
+    var total = 0, done = 0;
+    var handle = function(line) {
+      if (!line) return;
+      var obj = JSON.parse(line);
+      if (obj.type === 'meta') { total = obj.total; if (showProgress) updateLoadingProgress(0, total); }
+      else if (obj.type === 'session') {
+        sessions.push(obj.data); done++;
+        if (showProgress && (done % 5 === 0 || done === total)) updateLoadingProgress(done, total);
+      }
+    };
+    if (res.body && res.body.getReader) {
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+      while (true) {
+        var r = await reader.read();
+        if (r.done) break;
+        buf += decoder.decode(r.value, {stream: true});
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        for (var i = 0; i < lines.length; i++) handle(lines[i]);
+      }
+      handle(buf.trim());
+    } else {
+      // Fallback for environments without streaming: parse the buffered body.
+      (await res.text()).split('\n').forEach(function(l) { handle(l.trim()); });
+    }
+    if (showProgress) updateLoadingProgress(sessions.length, total || sessions.length);
     populateProjectFilter();
     renderSidebar();
   } catch(e) {
     console.error('Failed to fetch sessions:', e);
+  } finally {
+    if (showProgress) hideLoading();
   }
 }
 
@@ -589,7 +659,7 @@ async function renameSession(sessionId, name) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name: name})
   });
-  await fetchSessions();
+  await fetchSessions(false);
 }
 
 async function selectSession(sessionId) {
@@ -1042,7 +1112,7 @@ document.getElementById('search').addEventListener('input', function(e) {
 });
 
 // Boot
-fetchSessions().then(function() {
+fetchSessions(true).then(function() {
   if (window.matchMedia('(max-width: 768px)').matches) {
     renderMobileProjects();
     setMobileScreen('projects');
@@ -1400,9 +1470,24 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/sessions":
             db = get_db()
             try:
-                self.send_json(get_sessions(db))
+                sessions = get_sessions(db)
             finally:
                 db.close()
+            # Stream as newline-delimited JSON so the viewer can show real
+            # progress ("indexing X of N") while the payload transfers.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                self.wfile.write((json.dumps({"type": "meta", "total": len(sessions)}) + "\n").encode())
+                for i, s in enumerate(sessions):
+                    self.wfile.write((json.dumps({"type": "session", "data": s}) + "\n").encode())
+                    if i % 20 == 0:
+                        self.wfile.flush()
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         elif path == "/api/usage":
             db = get_db()
             try:
