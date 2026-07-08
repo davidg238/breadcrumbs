@@ -147,3 +147,22 @@ breadcrumbs/
 - No network calls
 - No dependencies beyond Python 3 stdlib
 - No analysis tooling (that's a separate future concern)
+
+## Addendum 2026-07-07 — transcript path resolution
+
+**Decision:** `handle_sync` locates the transcript via `resolve_transcript_path()`,
+which trusts the `transcript_path` in the Stop-hook payload and only falls back to
+deriving it from `cwd`.
+
+**Why:** The original derivation (`cwd.replace("/", "-")`) reconstructed Claude
+Code's project-dir slug from the recorded `cwd`. This silently mislocated the file
+in two cases, making sync bail (`transcript not found`) and leaving sessions with
+only metadata-less UserPromptSubmit placeholders (no date/tokens/assistant turns):
+1. **cd mid-session** — Claude names the transcript dir after the *launch* cwd,
+   which is fixed; the hook captures the *per-prompt* cwd, which can differ.
+2. **character sanitization** — Claude rewrites `_`→`-` (and other chars) in the
+   slug; the derivation only replaced `/`.
+
+Claude Code always passes the authoritative path, so use it. Invalidates the
+implicit assumption (elsewhere in these docs) that the transcript location is
+reconstructable from cwd.
