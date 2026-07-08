@@ -129,6 +129,23 @@ def transcript_path(session_id, cwd):
     return CLAUDE_DIR / "projects" / slug / f"{session_id}.jsonl"
 
 
+def resolve_transcript_path(hook_input, session_id, cwd):
+    """Locate the session transcript, trusting Claude Code's own hook payload.
+
+    The Stop hook receives the authoritative ``transcript_path``; use it. Only
+    fall back to deriving the path from ``cwd`` when it is absent. Deriving is
+    unreliable: Claude Code names the transcript directory after the session's
+    *launch* directory (which differs from the per-prompt ``cwd`` once the user
+    cds mid-session) and sanitizes characters like ``_`` to ``-`` that a naive
+    ``cwd.replace('/', '-')`` leaves intact. A mislocated path makes the sync
+    silently skip, leaving only metadata-less placeholder prompts.
+    """
+    tp = hook_input.get("transcript_path")
+    if tp:
+        return Path(tp).expanduser()
+    return transcript_path(session_id, cwd)
+
+
 def extract_text(content):
     """Extract plain text from a message's content field."""
     if isinstance(content, str):
@@ -361,7 +378,7 @@ def handle_sync(hook_input):
     if not session_id:
         return
 
-    tp = transcript_path(session_id, cwd)
+    tp = resolve_transcript_path(hook_input, session_id, cwd)
     if not tp.exists():
         print(f"breadcrumbs: transcript not found: {tp}", file=sys.stderr)
         return
