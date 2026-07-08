@@ -240,3 +240,20 @@ Planned for v2, not built in v1. Same `server.py` would add:
 - No real-time streaming (refresh to see new data)
 - No export functionality (use sqlite3 CLI directly)
 - No external dependencies
+
+## Addendum 2026-07-07 — session load performance & progress
+
+**Decision 1 — single-scan aggregation.** `get_sessions` computes message counts,
+first/last timestamps and token sums in one pass over the `messages` table, keyed
+by `session_id`. It replaces the previous GROUP BY join plus one usage query per
+session (an N+1) that made the first load ~11s with 500+ sessions; it is now under
+2s. The per-message `json.loads` of `usage_json` is the remaining cost — acceptable
+for a personal-scale DB; a materialized per-session aggregate table is the next
+lever if it ever needs to be faster.
+
+**Decision 2 — streaming load with progress.** `/api/sessions` streams
+newline-delimited JSON: a `meta` line with the total, then one session per line.
+The viewer shows a full-screen "Indexing X of N sessions" progress bar that fills
+as records arrive. This is *progressive delivery of one response*, not live data
+streaming — the "no real-time streaming" non-goal above (refresh to see new data)
+still holds.
