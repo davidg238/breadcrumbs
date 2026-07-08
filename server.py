@@ -696,7 +696,7 @@ function usageCard(title, w) {
   html += '<div class="usage-card-title">' + esc(title) + '</div>';
   html += '<div class="usage-card-total">' + fmtNum(total) + ' tokens</div>';
   html += '<div class="usage-card-breakdown">' + fmtNum(t.input || 0) + ' in / '
-        + fmtNum(t.output || 0) + ' out / ' + fmtNum((t.cache_write || 0) + (t.cache_read || 0)) + ' cache</div>';
+        + fmtNum((t.cache_write || 0) + (t.cache_read || 0)) + ' cache / ' + fmtNum(t.output || 0) + ' out</div>';
   if (w.reset_at) {
     html += '<div class="usage-card-reset" title="Approximate: rolling window from first message in range">'
           + esc(fmtCountdown(w.reset_at)) + '</div>';
