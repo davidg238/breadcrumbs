@@ -146,6 +146,41 @@ def resolve_transcript_path(hook_input, session_id, cwd):
     return transcript_path(session_id, cwd)
 
 
+# Tags Claude Code injects into role=user messages that the user did NOT type:
+# task notifications, slash-command expansions/output, and hook-injected notes.
+# These must not be labelled "You" in the viewer.
+INJECTION_TAGS = (
+    "task-notification",
+    "command-name", "command-message", "command-args",
+    "local-command-stdout", "local-command-stderr", "local-command-caveat",
+    "system-reminder", "user-prompt-submit-hook",
+    "bash-input", "bash-stdout", "bash-stderr",
+)
+_INJECTION_RE = re.compile(r"^\s*<(?:" + "|".join(INJECTION_TAGS) + r")[\s>]")
+
+
+def _is_injection_text(text):
+    """True if text opens with a known Claude Code injection tag."""
+    return bool(text) and _INJECTION_RE.match(text) is not None
+
+
+def classify_user_entry(entry, tool_result, content_text):
+    """Classify a role=user transcript entry.
+
+    Returns one of "user" (genuinely typed prompt), "tool_result", or
+    "system_injection". Genuine prompts are kept as "user" regardless of whether
+    their content arrives as a plain string or a list of text blocks; only tool
+    results, meta entries (skill loads), and tag-wrapped injections are demoted.
+    """
+    if tool_result is not None:
+        return "tool_result"
+    if entry.get("isMeta"):
+        return "system_injection"
+    if _is_injection_text(content_text):
+        return "system_injection"
+    return "user"
+
+
 def extract_text(content):
     """Extract plain text from a message's content field."""
     if isinstance(content, str):
@@ -448,14 +483,7 @@ def handle_sync(hook_input):
 
             # Classify user messages: real prompt vs tool result vs system injection
             if entry_type == "user" and role == "user":
-                if isinstance(content, str):
-                    pass  # genuine user prompt, keep type="user"
-                elif tool_result is not None:
-                    entry_type = "tool_result"
-                elif any(True for _ in extract_images(content)):
-                    pass  # prompt with pasted/dragged image(s), keep type="user"
-                else:
-                    entry_type = "system_injection"
+                entry_type = classify_user_entry(entry, tool_result, content_text)
 
             upsert_message(
                 db, uuid, session_id,

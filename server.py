@@ -1012,6 +1012,33 @@ document.getElementById('mobileProjects').addEventListener('click', function(e) 
   if (card) openProjectMobile(card.dataset.project);
 });
 
+// Classify a system-injected message into a readable label + one-line preview
+// so collapsed rows (task notifications, skill loads, command output) are scannable.
+function injectionMeta(text) {
+  text = text || '';
+  var strip = function(s) { return (s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); };
+  if (/^\s*<task-notification>/.test(text)) {
+    var status = (text.match(/<status>([^<]*)<\/status>/) || [])[1] || '';
+    var summary = (text.match(/<summary>([\s\S]*?)<\/summary>/) || [])[1] || '';
+    var preview = [status, strip(summary)].filter(Boolean).join(' · ');
+    return { label: 'Task Notification', preview: preview.substring(0, 120) };
+  }
+  if (/^\s*<command-name>/.test(text)) {
+    var cmd = (text.match(/<command-name>([\s\S]*?)<\/command-name>/) || [])[1] || '';
+    return { label: 'Command', preview: strip(cmd) };
+  }
+  if (/^\s*<local-command-(stdout|stderr)>/.test(text)) {
+    return { label: 'Command Output', preview: strip(text).substring(0, 100) };
+  }
+  if (/^\s*Base directory for this skill:/.test(text)) {
+    return { label: 'Skill Load', preview: strip(text).substring(0, 100) };
+  }
+  if (/^\s*<system-reminder>/.test(text)) {
+    return { label: 'System Reminder', preview: strip(text).substring(0, 100) };
+  }
+  return { label: 'System', preview: strip(text).substring(0, 100) };
+}
+
 function renderMessages(msgs) {
   var container = document.getElementById('messages');
   var html = '';
@@ -1055,11 +1082,13 @@ function renderMessages(msgs) {
       html += '</div>';
       html += '</div>';
     } else if (msg.type === 'system_injection') {
-      // System-injected content (skill loads, system reminders, etc.)
+      // System-injected content (task notifications, skill loads, command output, etc.)
+      var inj = injectionMeta(msg.content_text);
       html += '<div class="message system">';
       html += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
       html += '<span class="triangle">&#9654;</span>';
-      html += '<span class="message-label">System</span>';
+      html += '<span class="message-label">' + esc(inj.label) + '</span>';
+      html += '<span class="tool-preview">' + esc(inj.preview) + '</span>';
       html += '</div>';
       html += '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div>';
       html += renderImages(msg);
