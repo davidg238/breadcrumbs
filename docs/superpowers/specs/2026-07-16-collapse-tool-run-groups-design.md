@@ -66,3 +66,25 @@ No server, DB, or dependency changes.
 - Persisting expand/collapse state across reloads.
 - Configurable grouping rules or per-tool filtering.
 - Changing how individual rows or their previews render.
+
+## Addendum (2026-07-16) — grouping driven off rendered output
+
+First cut classified rows *before* rendering, which surfaced two bugs:
+
+- **Blank "Claude" rows.** Assistant turns that carry only a tool-use block
+  have `content_text = NULL` (the call is its own `Tool:` row). They rendered
+  as a bare "Claude" label + empty body.
+- **Phantom `s` count.** `type=attachment` rows (empty, `role=NULL`) match no
+  render branch and show nothing, but the c/r/s tally counted them as `s` — a
+  group showed e.g. `1c · 1r · 1s` with only two visible rows.
+
+**Decision:** grouping is now driven off *rendered output*. `renderRow` returns
+`''` for user/assistant rows with no text and no images; `renderMessages`
+ignores any row whose rendered HTML is empty — it does not show, does not count
+in the tally, and does not break a run. Only rows that actually appear are
+tallied.
+
+**Consequence:** a stretch of tool activity previously split by those empty
+tool-only assistant turns now merges into one group (e.g. `1c · 1r · 1s` →
+`3c · 3r`). This matches the intent: an uninterrupted run of tool activity
+between two pieces of *visible* prose is one group.
