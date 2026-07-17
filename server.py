@@ -316,6 +316,9 @@ a:hover { text-decoration: underline; }
 .message.assistant { background: #161b22; border-left-color: #a371f7; }
 .message.tool { background: #1c1e24; border-left-color: #f0883e; }
 .message.system { background: #161b22; border-left-color: #484f58; opacity: 0.7; }
+.message.group { background: #14161b; border-left-color: #30363d; padding: 8px 12px; }
+.message.group > .collapsible-content { margin-top: 8px; padding-left: 8px; border-left: 2px solid #21262d; }
+.message.group > .collapsible-content .message:last-child { margin-bottom: 0; }
 .message-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
 .message.user .message-label { color: #58a6ff; }
 .message.assistant .message-label { color: #a371f7; }
@@ -1039,75 +1042,140 @@ function injectionMeta(text) {
   return { label: 'System', preview: strip(text).substring(0, 100) };
 }
 
+// Rows that render, but neither participate as prose nor break a group.
+function isSkipped(msg) {
+  return msg.type === 'file-history-snapshot' || msg.type === 'progress';
+}
+
+// Prose rows (user typed messages, Claude replies) always render inline and
+// break a run of tool/system rows.
+function isProse(msg) {
+  if (msg.tool_name || msg.type === 'tool_result' || msg.type === 'system_injection') return false;
+  if (msg.role === 'system') return false;
+  if (msg.role === 'user' && msg.tool_result) return false; // tool result carried on a user row
+  return msg.role === 'user' || msg.role === 'assistant';
+}
+
+// Classify a non-prose row for the c/r/s tally in a group summary.
+function rowKind(msg) {
+  if (msg.tool_name) return 'c';
+  if (msg.type === 'tool_result' || (msg.role === 'user' && msg.tool_result)) return 'r';
+  return 's'; // system + system_injection
+}
+
+// Render a single message as its own row, exactly as before grouping existed.
+function renderRow(msg) {
+  if (msg.tool_name) {
+    // Tool call
+    var preview = (msg.content_text || msg.tool_input || '').substring(0, 80).replace(/\n/g, ' ');
+    var h = '<div class="message tool">';
+    h += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
+    h += '<span class="triangle">&#9654;</span>';
+    h += '<span class="message-label">Tool: ' + esc(msg.tool_name) + '</span>';
+    h += '<span class="tool-preview">' + esc(preview) + '</span>';
+    h += '</div>';
+    h += '<div class="collapsible-content">';
+    if (msg.tool_input) h += '<div class="tool-detail">' + esc(msg.tool_input) + '</div>';
+    if (msg.tool_result) h += '<div class="tool-detail">' + esc(msg.tool_result) + '</div>';
+    h += '</div>';
+    h += '</div>';
+    return h;
+  } else if (msg.role === 'system') {
+    return '<div class="message system">' +
+      '<div class="collapsible-header" onclick="toggleCollapse(this)">' +
+      '<span class="triangle">&#9654;</span>' +
+      '<span class="message-label">System</span>' +
+      '</div>' +
+      '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div></div>' +
+      '</div>';
+  } else if (msg.type === 'tool_result' || (msg.role === 'user' && msg.tool_result)) {
+    // Tool result
+    var trPreview = (msg.content_text || msg.tool_result || '').substring(0, 80).replace(/\\n/g, ' ');
+    return '<div class="message tool">' +
+      '<div class="collapsible-header" onclick="toggleCollapse(this)">' +
+      '<span class="triangle">&#9654;</span>' +
+      '<span class="message-label">Tool Result</span>' +
+      '<span class="tool-preview">' + esc(trPreview) + '</span>' +
+      '</div>' +
+      '<div class="collapsible-content">' +
+      '<div class="tool-detail">' + esc(msg.content_text || msg.tool_result || '') + '</div>' +
+      '</div>' +
+      '</div>';
+  } else if (msg.type === 'system_injection') {
+    // System-injected content (task notifications, skill loads, command output, etc.)
+    var inj = injectionMeta(msg.content_text);
+    return '<div class="message system">' +
+      '<div class="collapsible-header" onclick="toggleCollapse(this)">' +
+      '<span class="triangle">&#9654;</span>' +
+      '<span class="message-label">' + esc(inj.label) + '</span>' +
+      '<span class="tool-preview">' + esc(inj.preview) + '</span>' +
+      '</div>' +
+      '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div>' +
+      renderImages(msg) +
+      '</div>' +
+      '</div>';
+  } else if (msg.role === 'user') {
+    var uImgs = renderImages(msg);
+    if (!(msg.content_text || '').trim() && !uImgs) return ''; // empty user row -> nothing
+    return '<div class="message user">' +
+      '<div class="message-label">You</div>' +
+      '<div class="message-body">' + esc(msg.content_text || '') + '</div>' +
+      uImgs +
+      '</div>';
+  } else if (msg.role === 'assistant') {
+    var aImgs = renderImages(msg);
+    // Assistant turns that carry only a tool-use block have empty text (the call
+    // is its own row); render nothing rather than a bare "Claude" label.
+    if (!(msg.content_text || '').trim() && !aImgs) return '';
+    return '<div class="message assistant">' +
+      '<div class="message-label">Claude</div>' +
+      '<div class="message-body md">' + renderMarkdown(msg.content_text || '') + '</div>' +
+      aImgs +
+      '</div>';
+  }
+  return '';
+}
+
+// Collapse a run (>= 2) of non-prose rows into one summary line with a c/r/s
+// tally. `run` holds {msg, html} for rows that actually rendered.
+function renderGroup(run) {
+  var c = 0, r = 0, s = 0;
+  run.forEach(function(x) { var k = rowKind(x.msg); if (k === 'c') c++; else if (k === 'r') r++; else s++; });
+  var parts = [];
+  if (c) parts.push(c + 'c');
+  if (r) parts.push(r + 'r');
+  if (s) parts.push(s + 's');
+  var summary = parts.join(' · ');
+  var h = '<div class="message group">';
+  h += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
+  h += '<span class="triangle">&#9654;</span>';
+  h += '<span class="tool-preview">' + esc(summary) + '</span>';
+  h += '</div>';
+  h += '<div class="collapsible-content">';
+  run.forEach(function(x) { h += x.html; });
+  h += '</div>';
+  h += '</div>';
+  return h;
+}
+
 function renderMessages(msgs) {
   var container = document.getElementById('messages');
   var html = '';
+  var run = []; // {msg, html} for consecutive non-prose rows that rendered
+  var flush = function() {
+    if (run.length === 1) html += run[0].html;
+    else if (run.length >= 2) html += renderGroup(run);
+    run = [];
+  };
 
   msgs.forEach(function(msg) {
-    if (msg.type === 'file-history-snapshot' || msg.type === 'progress') return;
-
-    if (msg.tool_name) {
-      // Tool call
-      var preview = (msg.content_text || msg.tool_input || '').substring(0, 80).replace(/\n/g, ' ');
-      html += '<div class="message tool">';
-      html += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
-      html += '<span class="triangle">&#9654;</span>';
-      html += '<span class="message-label">Tool: ' + esc(msg.tool_name) + '</span>';
-      html += '<span class="tool-preview">' + esc(preview) + '</span>';
-      html += '</div>';
-      html += '<div class="collapsible-content">';
-      if (msg.tool_input) html += '<div class="tool-detail">' + esc(msg.tool_input) + '</div>';
-      if (msg.tool_result) html += '<div class="tool-detail">' + esc(msg.tool_result) + '</div>';
-      html += '</div>';
-      html += '</div>';
-    } else if (msg.role === 'system') {
-      html += '<div class="message system">';
-      html += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
-      html += '<span class="triangle">&#9654;</span>';
-      html += '<span class="message-label">System</span>';
-      html += '</div>';
-      html += '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div></div>';
-      html += '</div>';
-    } else if (msg.type === 'tool_result' || (msg.role === 'user' && msg.tool_result)) {
-      // Tool result
-      var trPreview = (msg.content_text || msg.tool_result || '').substring(0, 80).replace(/\\n/g, ' ');
-      html += '<div class="message tool">';
-      html += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
-      html += '<span class="triangle">&#9654;</span>';
-      html += '<span class="message-label">Tool Result</span>';
-      html += '<span class="tool-preview">' + esc(trPreview) + '</span>';
-      html += '</div>';
-      html += '<div class="collapsible-content">';
-      html += '<div class="tool-detail">' + esc(msg.content_text || msg.tool_result || '') + '</div>';
-      html += '</div>';
-      html += '</div>';
-    } else if (msg.type === 'system_injection') {
-      // System-injected content (task notifications, skill loads, command output, etc.)
-      var inj = injectionMeta(msg.content_text);
-      html += '<div class="message system">';
-      html += '<div class="collapsible-header" onclick="toggleCollapse(this)">';
-      html += '<span class="triangle">&#9654;</span>';
-      html += '<span class="message-label">' + esc(inj.label) + '</span>';
-      html += '<span class="tool-preview">' + esc(inj.preview) + '</span>';
-      html += '</div>';
-      html += '<div class="collapsible-content"><div class="message-body">' + esc(msg.content_text || '') + '</div>';
-      html += renderImages(msg);
-      html += '</div>';
-      html += '</div>';
-    } else if (msg.role === 'user') {
-      html += '<div class="message user">';
-      html += '<div class="message-label">You</div>';
-      html += '<div class="message-body">' + esc(msg.content_text || '') + '</div>';
-      html += renderImages(msg);
-      html += '</div>';
-    } else if (msg.role === 'assistant') {
-      html += '<div class="message assistant">';
-      html += '<div class="message-label">Claude</div>';
-      html += '<div class="message-body md">' + renderMarkdown(msg.content_text || '') + '</div>';
-      html += renderImages(msg);
-      html += '</div>';
-    }
+    if (isSkipped(msg)) return; // known non-rendering types
+    var row = renderRow(msg);
+    if (!row) return; // rows that render to nothing (attachments, empty prose) don't group or break a run
+    if (isProse(msg)) { flush(); html += row; }
+    else run.push({ msg: msg, html: row });
   });
+  flush();
 
   container.innerHTML = html || '<div class="empty-state">No messages in this session</div>';
 }
