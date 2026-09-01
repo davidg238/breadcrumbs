@@ -183,3 +183,38 @@ Once the server is running, the user adds to `~/.claude/settings.json`:
 - No session state (each request is independent)
 - No write operations (read-only access to history)
 - No notifications or subscriptions
+
+---
+
+## Addendum 2026-09-01 — client configuration corrected
+
+The MCP client config shown above is wrong in two ways, and is superseded by this section. See
+issue #2 for the underlying server-side defect.
+
+**Transport key.** Claude Code expects `"type": "http"`, not `"type": "url"`. Register it with the
+CLI rather than hand-editing JSON:
+
+```
+claude mcp add --transport http breadcrumbs http://100.119.137.74:8765/mcp -s user
+```
+
+**Endpoint host.** `http://localhost:8765/mcp` cannot work while the service runs with
+`--tailscale`. `resolve_bind_host()` (server.py:1685) *replaces* the bind host instead of adding
+one, so the only listener is on the tailnet IP and nothing answers on `127.0.0.1:8765`.
+
+The MagicDNS hostname (`msi-7d43.tail8b692.ts.net`) is not a safe substitute either. It resolved and
+served fine on demand, but it makes every same-machine MCP connect depend on a MagicDNS lookup
+succeeding at the instant a session starts — and Claude Code connects each MCP server exactly once at
+startup with no retry, so one transient hiccup disables the server for that whole session. Two
+concurrent sessions were observed failing this way on 2026-09-01 while the server itself was healthy
+and had been up for 1d 7h. Using the raw tailnet IP removes the DNS step and cut connect latency
+from ~67ms to ~1-3ms.
+
+**Non-Goals correction.** "No authentication (localhost only, same as viewer)" no longer describes
+reality: under `--tailscale` the viewer and the MCP endpoint are reachable by any node on the
+tailnet, not just this machine. The tailnet is the trust boundary. Per the project's single-user
+scope this is accepted rather than fixed, but it should not be written down as localhost-only.
+
+**Still open.** Pointing at the IP is a client-side workaround. Local clients continue to depend on
+`tailscale0` being up. The candidate fix in issue #2 is a dual bind (loopback + tailnet IP), which
+is preferred over `0.0.0.0` because the latter would additionally expose the viewer on the LAN.
