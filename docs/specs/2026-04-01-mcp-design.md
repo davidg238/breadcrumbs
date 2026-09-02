@@ -218,3 +218,20 @@ scope this is accepted rather than fixed, but it should not be written down as l
 **Still open.** Pointing at the IP is a client-side workaround. Local clients continue to depend on
 `tailscale0` being up. The candidate fix in issue #2 is a dual bind (loopback + tailnet IP), which
 is preferred over `0.0.0.0` because the latter would additionally expose the viewer on the LAN.
+
+### Correction to the 2026-09-01 addendum
+
+The addendum above attributed that day's connection failures to transient MagicDNS lookups. That was
+wrong. `claude mcp list` reported a **scope conflict**: `/home/david/.mcp.json` defined breadcrumbs
+at `http://localhost:8765/mcp`, and project scope takes precedence over user scope, so the
+user-scope tailnet-IP entry was never the one being dialed. The failure was deterministic — the
+client was probing loopback, where `--tailscale` guarantees no listener — not intermittent.
+
+Removing the stale project-scope definitions (`/home/david/.mcp.json`, and a second one in
+`/home/david/workspace/rete/.mcp.json` pinned to the MagicDNS hostname) left user scope as the single
+source of truth, and the server now reports `✔ Connected`.
+
+The rest of the addendum stands: prefer the raw tailnet IP over the hostname, `"type": "http"` is the
+correct transport key, and the "localhost only" non-goal is still wrong. The practical lesson is that
+MCP endpoints for this server should be defined in exactly one scope — a stray `.mcp.json` naming
+`localhost` will silently shadow a correct user-scope entry.
