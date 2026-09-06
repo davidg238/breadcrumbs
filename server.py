@@ -5,9 +5,12 @@ import argparse
 import json
 import sqlite3
 import subprocess
+import sys
+import threading
+import time
 import webbrowser
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -150,20 +153,20 @@ def get_db():
     return db
 
 
-def get_sessions(db):
-    rows = db.execute("SELECT * FROM sessions ORDER BY started_at DESC").fetchall()
+# Per-session message aggregates (count, first/last timestamp, token sums),
+# cached across requests. Scanning every message row in Python cost ~1.3s per
+# page load with 460k rows. Each cache entry is keyed by the session's
+# (row count, max rowid) fingerprint, which changes on any insert and on the
+# recorder's delete-and-reinsert sync, so only sessions with new activity are
+# rescanned. Guarded by a lock because the server is threaded.
+SESSION_AGG_CACHE = {}
+_SESSION_AGG_LOCK = threading.Lock()
 
-    # Aggregate message counts, timestamps and token usage for every session in
-    # a single scan over the messages table. The previous approach ran a GROUP BY
-    # join plus one usage query per session (an N+1), which made the first page
-    # load take ~10s with 500+ sessions; one pass keeps it a few seconds.
-    agg_by_session = {}
-    for m in db.execute("SELECT session_id, timestamp, usage_json, model FROM messages"):
-        a = agg_by_session.get(m["session_id"])
-        if a is None:
-            a = {"count": 0, "first": None, "last": None,
-                 "input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "model": None}
-            agg_by_session[m["session_id"]] = a
+
+def _aggregate_messages(rows):
+    a = {"count": 0, "first": None, "last": None,
+         "input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "model": None}
+    for m in rows:
         a["count"] += 1
         ts = m["timestamp"]
         if ts:
@@ -179,6 +182,33 @@ def get_sessions(db):
             a["output"] += u.get("output_tokens", 0)
             a["cache_write"] += u.get("cache_creation_input_tokens", 0)
             a["cache_read"] += u.get("cache_read_input_tokens", 0)
+    return a
+
+
+def _session_aggregates(db):
+    fingerprints = {
+        r["session_id"]: (r["n"], r["max_rowid"])
+        for r in db.execute(
+            "SELECT session_id, COUNT(*) AS n, MAX(rowid) AS max_rowid "
+            "FROM messages GROUP BY session_id")
+    }
+    with _SESSION_AGG_LOCK:
+        for sid in list(SESSION_AGG_CACHE):
+            if sid not in fingerprints:
+                del SESSION_AGG_CACHE[sid]
+        for sid, fp in fingerprints.items():
+            cached = SESSION_AGG_CACHE.get(sid)
+            if cached is None or cached[0] != fp:
+                rows = db.execute(
+                    "SELECT timestamp, usage_json, model FROM messages WHERE session_id = ?",
+                    (sid,))
+                SESSION_AGG_CACHE[sid] = (fp, _aggregate_messages(rows))
+        return {sid: agg for sid, (fp, agg) in SESSION_AGG_CACHE.items()}
+
+
+def get_sessions(db):
+    rows = db.execute("SELECT * FROM sessions ORDER BY started_at DESC").fetchall()
+    agg_by_session = _session_aggregates(db)
 
     empty = {"count": 0, "first": None, "last": None,
              "input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "model": None}
@@ -1544,6 +1574,24 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def send_response(self, code, message=None):
+        self._status = code
+        super().send_response(code, message)
+
+    def handle_one_request(self):
+        # One line per request to stderr (the journal under systemd), with the
+        # client and wall-clock duration, so a stalled or slow client is
+        # attributable after the fact.
+        self._status = None
+        started = time.monotonic()
+        super().handle_one_request()
+        if not getattr(self, "raw_requestline", None) or not getattr(self, "command", None):
+            return  # connection closed without sending a request
+        stamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        print(f"{stamp} {self.client_address[0]} {self.command} {self.path} "
+              f"{self._status if self._status is not None else '-'} "
+              f"{time.monotonic() - started:.3f}s", file=sys.stderr, flush=True)
+
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
         self.send_response(status)
@@ -1692,6 +1740,15 @@ def resolve_bind_host(host, use_tailscale, ip_lookup=tailscale_ip):
     return ip
 
 
+def make_server(host, port):
+    # Threaded so one slow, idle or vanished client (a phone on a flaky link,
+    # a browser preconnect that never sends a request) cannot stall every
+    # other request. SQLite connections are opened per request already.
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd.daemon_threads = True
+    return httpd
+
+
 def main():
     parser = argparse.ArgumentParser(description="Breadcrumbs Viewer — browse Claude Code session history")
     parser.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
@@ -1715,7 +1772,7 @@ def main():
     port = args.port
     while True:
         try:
-            server = HTTPServer((bind_host, port), Handler)
+            server = make_server(bind_host, port)
             break
         except OSError:
             port += 1
