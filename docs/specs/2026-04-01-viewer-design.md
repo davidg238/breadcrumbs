@@ -287,3 +287,46 @@ instead of a wall of always-expanded XML.
 **Backfill.** Applied to existing data by re-running the idempotent `handle_sync`
 over every session whose transcript still exists on disk (164 of 510; the other 346
 have no transcript and were left untouched).
+
+## Addendum 2026-09-05 — threaded server, request log, cached session aggregates
+
+**Problem.** The viewer took over 1.5 minutes to load from Chrome on the server's
+own machine (2026-09-05, ~19:47 and earlier ~17:13), then loaded in 2s a few
+minutes later. Investigation ruled out Tailscale (browser and server on the same
+host; MagicDNS resolves in 1ms; no AAAA record) and server work (HTML 2ms,
+`/api/sessions` 1.3s, `/api/usage` 60ms measured during the incident window).
+The only server log line was a `BrokenPipeError` writing `/` to a local client —
+the server got to a request only after the browser had abandoned it, which on a
+single-threaded `HTTPServer` means the one thread was tied up by some other
+connection. Because request logging was suppressed, the blocking connection could
+not be identified; the Pixel on a flapping T-Mobile Tailscale path was active in
+both windows and is the leading suspect. A browser preconnect that never sends a
+request has the same effect: `handle()` blocks reading a request line with no
+timeout.
+
+**Decision 1 — `ThreadingHTTPServer`.** `make_server()` builds a
+`ThreadingHTTPServer` with daemon threads. One slow, idle or vanished client can no
+longer stall every other request. SQLite connections were already per request.
+This supersedes the earlier YAGNI call to stay single-threaded; the cost of that
+call turned out to be a page that hangs whenever any other client misbehaves.
+Regression test: `tests/test_server_http.py` holds an idle connection open and
+asserts a second client is still served within 5s.
+
+**Decision 2 — one log line per request.** `Handler.handle_one_request` prints
+`<local time> <client ip> <method> <path> <status> <seconds>` to stderr (the
+journal under systemd). Default `BaseHTTPRequestHandler` logging stays suppressed;
+this line carries duration and status, which is what the incident lacked. Read with
+`journalctl --user -u breadcrumbs -o cat`.
+
+**Decision 3 — per-session aggregate cache.** Decision 1 of the 2026-04-01 notes
+(one Python scan over every message row) had grown to 1.3s per page load at 460k
+rows. `SESSION_AGG_CACHE` keeps each session's aggregate keyed by its
+`(COUNT(*), MAX(rowid))` fingerprint from a single `GROUP BY session_id` query on
+the session index. Any insert raises the max rowid and the recorder's
+delete-and-reinsert sync changes the count or the max rowid, so only sessions with
+new activity are rescanned. Measured on the live DB: cold 1.35s, warm 0.04s. The
+materialized aggregate table floated earlier is still unnecessary.
+
+**Known gap.** `tests/test_api.sh` aborts partway (a `json.loads` of the
+newline-delimited `/api/sessions` body) on master before and after this change;
+it never reaches its results line. Tracked as #3; left as is here.
